@@ -199,8 +199,6 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     }
 
     png_write_end(png_ptr, NULL);
-    png_destroy_write_struct(&png_ptr, &info_ptr);
-
     fflush(memory_stream);
 
     // At minimum, may be "Image at 65535 65535 on ``, source: " (length 36 + 1 (\0))
@@ -208,9 +206,18 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     char* response = malloc(max_response_length); 
     snprintf(response, max_response_length, "Image at %i %i on `%s`, source: %s",
         image_bounds[0], image_bounds[1], canvas_name, canvas_url);
+        
 
     struct discord_create_message params = {
-        .content = response
+        .content = response,
+        .attachments = &(struct discord_attachments) {
+            .size = 1,
+            .array = &(struct discord_attachment) {
+                .content = stream_buffer,
+                .size = stream_length,
+                .filename = "place.png"
+            },
+        }
     };
     discord_create_message(client, event->channel_id, &params, NULL);
     
@@ -219,6 +226,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     fclose(memory_stream);
     free(stream_buffer);
     curl_easy_cleanup(curl);
+    png_destroy_write_struct(&png_ptr, &info_ptr);
 }
 
 int main(int argc, char *argv[])
