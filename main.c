@@ -5,6 +5,7 @@
 #include <curl/curl.h>
 #include <png.h>
 #include <string.h>
+#include <sys/param.h>
 
 struct memory_fetch {
     size_t size;
@@ -55,8 +56,7 @@ char default_palette[32][3] = {
 // You will have to install concord separately unfortunately as the library itself
 // does not implement a cmakelists.txt to be compiled alongside this project as a gitmodule
 // This project can be compiled easily with gcc main.c -o RplaceBot -pthread -ldiscord -lcurl -lpng
-void on_ready(struct discord* client, const struct discord_ready* event)
-{
+void on_ready(struct discord* client, const struct discord_ready* event) {
     log_info("Rplace canvas bot succesfully connected to Discord as %s#%s!",
              event->user->username, event->user->discriminator);
 }
@@ -81,8 +81,11 @@ static size_t write_fetch(void* contents, size_t size, size_t nmemb, void* userp
     return data_size;
 }
 
-void on_canvas_mention(struct discord* client, const struct discord_message* event)
-{
+void on_help(struct discord* client, const struct discord_message* event) {
+
+}
+
+void on_canvas_mention(struct discord* client, const struct discord_message* event) {
     if (event->author->bot) return;
 
     char* count_state = NULL;
@@ -117,7 +120,9 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
+
     for (int i = 0; i < 4; i++) {
+        arg = strtok_r(NULL, " ", &count_state);
         if (arg == NULL) {
             struct discord_create_message params = { .content =
                 "Not enough arguments supplied, use this command like:\n"
@@ -127,8 +132,13 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         }
 
         image_bounds[i] = atoi(arg);
-        arg = strtok_r(NULL, " ", &count_state);
     }
+
+    // TODO: Split out image bounds into separate variables
+    image_bounds[0] = MAX(0, image_bounds[0]);
+    image_bounds[1] = MAX(0, image_bounds[1]);
+    image_bounds[1] = MIN(canvas_width - image_bounds[0], image_bounds[2]);
+    image_bounds[1] = MIN(canvas_height - image_bounds[1], image_bounds[3]);
 
     // Fetch and render canvas
     char* stream_buffer = NULL;
@@ -158,7 +168,6 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         return;
     }
 
-
     png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
     if (!png_ptr) {
         struct discord_create_message params = { .content =
@@ -178,23 +187,41 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     }
 
     png_init_io(png_ptr, memory_stream);
-    png_set_IHDR(png_ptr, info_ptr, canvas_width, canvas_height, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    png_set_IHDR(png_ptr, info_ptr, image_bounds[2], image_bounds[3], 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
     png_write_info(png_ptr, info_ptr);
 
-    png_bytep row_pointers[canvas_height];
+    png_bytep row_pointers[image_bounds[3]];
     
-    // Okay now we can actually draw
-    for (int i = 0; i < canvas_height; i++) {
-        row_pointers[i] = (png_bytep) calloc(3 * canvas_width, sizeof(png_byte));
-        for (int j = 0; j < canvas_width; j++) {
-            int index = i * canvas_width + j;
-            memcpy(&row_pointers[i][3 * j], default_palette[chunk.memory[index]], 3);
+    for (int i = 0; i < image_bounds[3]; i++) {
+        row_pointers[i] = (png_bytep) calloc(3 * image_bounds[2], sizeof(png_byte));
+    }
+    
+    // image_bounds[0] = startX, image_bounds[1] = endX,
+    // image_bounds[2] = width, image_bounds[3] = height
+    int i = canvas_width * image_bounds[0] + image_bounds[1];
+    while (i < canvas_width * canvas_height) {
+        memcpy(&row_pointers
+                    [i / canvas_width - image_bounds[1]] // y
+                    [3 * (i % canvas_width - image_bounds[0])], // x
+              default_palette[chunk.memory[i]], 3); // colour
+        i++;
+
+        // If we exceed width, go to next row, otherwise continue
+        if (i % canvas_width < image_bounds[0] + image_bounds[2]) {
+            continue; 
         }
+
+        // If we exceed end bottom, we are done drawing this
+        if (i / canvas_width == image_bounds[1] + image_bounds[3] - 1) {
+            break; 
+        }
+        
+        i += canvas_width - (image_bounds[2]);
     }
 
     png_write_image(png_ptr, row_pointers);
 
-    for (int i = 0; i < canvas_height; i++) {
+    for (int i = 0; i < image_bounds[3]; i++) {
         free(row_pointers[i]);
     }
 
@@ -229,8 +256,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     png_destroy_write_struct(&png_ptr, &info_ptr);
 }
 
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
     const char* config_file = "config.json";
 
     ccord_global_init();
@@ -238,7 +264,9 @@ int main(int argc, char *argv[])
 
     discord_set_on_ready(client, &on_ready);
     discord_set_on_command(client, "view", &on_canvas_mention);
-    discord_set_on_command(client, "help", &on_canvas_mention);
+    discord_set_on_command(client, "help", &on_help);
+    discord_set_on_command(client, "", &on_help);
+    discord_set_on_commands(client, (char*[]){ "help", "?", "" }, 3,  &on_help);
     discord_run(client);
 
     discord_cleanup(client);
