@@ -82,7 +82,23 @@ static size_t write_fetch(void* contents, size_t size, size_t nmemb, void* userp
 }
 
 void on_help(struct discord* client, const struct discord_message* event) {
-
+    struct discord_embed embed = {
+        .title = "Commands",
+        .description =
+            "**r/view** `canvas1/canvas2/turkeycanvas/...` `x` `y` `w` `h` \n*Create an image from a region of the canvas*\n\n"
+            "**r/help**, **r/?**, **r/** \n*Displays information about this bot*\n\n",
+        .color = 0xFF4500,
+        .footer = &(struct discord_embed_footer) {
+            .text = "https://rplace.tk, bot by Zekiah-A",
+            .icon_url = "https://github.com/rslashplace2/rslashplace2.github.io/raw/main/favicon.png"
+        }
+    };
+    
+    struct discord_create_message params = {
+        .embeds = &(struct discord_embeds) { .size = 1, .array = &embed }
+    };
+    
+    discord_create_message(client, event->channel_id, &params, NULL);
 }
 
 void on_canvas_mention(struct discord* client, const struct discord_message* event) {
@@ -137,8 +153,8 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     // TODO: Split out image bounds into separate variables
     image_bounds[0] = MAX(0, image_bounds[0]);
     image_bounds[1] = MAX(0, image_bounds[1]);
-    image_bounds[2] = MIN(canvas_width - image_bounds[0], image_bounds[2]);
-    image_bounds[3] = MIN(canvas_height - image_bounds[1], image_bounds[3]);
+    image_bounds[2] = MIN(canvas_width - 1 - image_bounds[0], image_bounds[2]);
+    image_bounds[3] = MIN(canvas_height - 1 - image_bounds[1], image_bounds[3]);
 
     // Fetch and render canvas
     char* stream_buffer = NULL;
