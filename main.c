@@ -69,7 +69,7 @@ static size_t write_fetch(void* contents, size_t size, size_t nmemb, void* userp
 
     char* new_memory = realloc(fetch->memory, fetch->size + data_size + 1);
     if (new_memory == NULL) {
-        printf("Out of memory, can not carray out fetch reallocation\n");
+        printf("Out of memory, can not carry out fetch reallocation\n");
         return 0;
     }
 
@@ -137,8 +137,8 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     // TODO: Split out image bounds into separate variables
     image_bounds[0] = MAX(0, image_bounds[0]);
     image_bounds[1] = MAX(0, image_bounds[1]);
-    image_bounds[1] = MIN(canvas_width - image_bounds[0], image_bounds[2]);
-    image_bounds[1] = MIN(canvas_height - image_bounds[1], image_bounds[3]);
+    image_bounds[2] = MIN(canvas_width - image_bounds[0], image_bounds[2]);
+    image_bounds[3] = MIN(canvas_height - image_bounds[1], image_bounds[3]);
 
     // Fetch and render canvas
     char* stream_buffer = NULL;
@@ -216,7 +216,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
             break; 
         }
         
-        i += canvas_width - (image_bounds[2]);
+        i += canvas_width - image_bounds[2];
     }
 
     png_write_image(png_ptr, row_pointers);
@@ -256,7 +256,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     png_destroy_write_struct(&png_ptr, &info_ptr);
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
     const char* config_file = "config.json";
 
     ccord_global_init();
