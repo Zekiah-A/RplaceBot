@@ -185,7 +185,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     
     // Reassure client that we have stared before we do any heavy lifting
     discord_create_reaction(client, event->channel_id, event->id,
-                            0, "white_check_mark", NULL);
+                            0, "✅", NULL);
 
     // Fetch and render canvas
     char* stream_buffer = NULL;
