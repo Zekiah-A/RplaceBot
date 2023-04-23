@@ -182,6 +182,10 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
             discord_create_message(client, event->channel_id, &params, NULL);
         }
     }
+    
+    // Reassure client that we have stared before we do any heavy lifting
+    discord_create_reaction(client, event->channel_id, event->id,
+                            0, "white_check_mark", NULL);
 
     // Fetch and render canvas
     char* stream_buffer = NULL;
@@ -267,9 +271,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     }
     
     int i = canvas_width * start_y + start_x;
-    while (i < canvas_width * canvas_height) {
-        printf("%i, %i\n", i / canvas_width - start_y, (i % canvas_width - start_x));
-        
+    while (i < canvas_width * canvas_height) {        
         // Copy over colour to image
         char* position = &row_pointers
             [i / canvas_width - start_y] //x
