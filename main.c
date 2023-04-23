@@ -109,9 +109,8 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     if (arg == NULL) return;
     char* canvas_name = arg;
     char* canvas_url = NULL;
-    int image_bounds[4];
-    int canvas_width;
-    int canvas_height;
+    int canvas_width = 0;
+    int canvas_height = 0;
 
     // Read parameters from message
     if (strcmp(arg, "canvas1") == 0) {
@@ -137,24 +136,52 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         return;
     }
 
-    for (int i = 0; i < 4; i++) {
+    int start_x = 0;
+    int start_y = 0;
+    int width = canvas_width - 1;
+    int height = canvas_height - 1;
+
+    arg = strtok_r(NULL, " ", &count_state);
+    if (arg != NULL) {
+        start_x = MAX(0, MIN(canvas_width - 1, atoi(arg)));
+
         arg = strtok_r(NULL, " ", &count_state);
         if (arg == NULL) {
             struct discord_create_message params = { .content =
-                "Not enough arguments supplied, use this command like:\n"
+                "Start Y argument not supplied, use this command like:\n"
                 "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h`" };
             discord_create_message(client, event->channel_id, &params, NULL);
             return;
         }
+        start_y = MAX(0, MIN(canvas_width - 1, atoi(arg)));
 
-        image_bounds[i] = atoi(arg);
+        arg = strtok_r(NULL, " ", &count_state);
+        if (arg == NULL) {
+            struct discord_create_message params = { .content =
+                "Width argument not supplied, use this command like:\n"
+                "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h`" };
+            discord_create_message(client, event->channel_id, &params, NULL);
+            return;
+        }
+        width = MIN(canvas_width - 1 - start_x, atoi(arg));
+
+        arg = strtok_r(NULL, " ", &count_state);
+        if (arg == NULL) {
+            struct discord_create_message params = { .content =
+                "Height argument not supplied, use this command like:\n"
+                "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h`" };
+            discord_create_message(client, event->channel_id, &params, NULL);
+            return;
+        }
+        height = MIN(canvas_height - 1 - start_y, atoi(arg));
+
+        if (width <= 0 || height <= 0) {
+            struct discord_create_message params = { .content =
+                "Height or width can not be zero, use this command like:\n"
+                "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h`" };
+            discord_create_message(client, event->channel_id, &params, NULL);
+        }
     }
-
-    // TODO: Split out image bounds into separate variables
-    image_bounds[0] = MAX(0, image_bounds[0]);
-    image_bounds[1] = MAX(0, image_bounds[1]);
-    image_bounds[2] = MIN(canvas_width - 1 - image_bounds[0], image_bounds[2]);
-    image_bounds[3] = MIN(canvas_height - 1 - image_bounds[1], image_bounds[3]);
 
     // Fetch and render canvas
     char* stream_buffer = NULL;
@@ -172,7 +199,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &chunk);
 
     result = curl_easy_perform(curl);
-    if (result != CURLE_OK || chunk.size < canvas_width * canvas_height) {
+    if (result != CURLE_OK) {
         printf("%s\n", curl_easy_strerror(result));
         perror("Error fetching file");
         printf("%d\n", result);
@@ -184,10 +211,37 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         return;
     }
 
+    // Then this is a new format (RLE encoded) board that must be decoded
+    if (chunk.size < canvas_width * canvas_height)
+    {
+        int decoded_size = canvas_width * canvas_height;
+        char* decoded_board = malloc(decoded_size);
+        int boardI = 0;
+        int colour = 0;
+
+       for (int i = 0; i < chunk.size; i++) {
+            // Then it is a palette value
+            if (i % 2 == 0) {
+                colour = chunk.memory[i];
+                continue;
+            }
+            // After the colour, we koop until we unpack all repeats, since we never have zero
+            // repeats, we use 0 as 1 so we treat everything as i + 1 repeats.
+            for (int j = 0; j < chunk.memory[i] + 1; j++) {
+                decoded_board[boardI] = colour;
+                boardI++;
+            }
+       }
+
+        free(chunk.memory);
+        chunk.memory = decoded_board;
+        chunk.size = decoded_size;
+    }
+
     png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
     if (!png_ptr) {
         struct discord_create_message params = { .content =
-            "Sorry, an unexpected drawing error and I can't create an image of that canvas, "
+            "Sorry, an unexpected drawing error ocurred and I can't create an image of that canvas, "
             "please try again later." };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
@@ -196,48 +250,51 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     png_infop info_ptr = png_create_info_struct(png_ptr);
     if (!info_ptr) {
         struct discord_create_message params = { .content =
-            "Sorry, an unexpected drawing error and I can't create an image of that canvas, "
+            "Sorry, an unexpected drawing error ocurred and I can't create an image of that canvas, "
             "please try again later." };
         png_destroy_write_struct(&png_ptr, NULL);
         return;
     }
 
     png_init_io(png_ptr, memory_stream);
-    png_set_IHDR(png_ptr, info_ptr, image_bounds[2], image_bounds[3], 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    png_set_IHDR(png_ptr, info_ptr, width, height, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
     png_write_info(png_ptr, info_ptr);
 
-    png_bytep row_pointers[image_bounds[3]];
+    png_bytep row_pointers[height];
     
-    for (int i = 0; i < image_bounds[3]; i++) {
-        row_pointers[i] = (png_bytep) calloc(3 * image_bounds[2], sizeof(png_byte));
+    for (int i = 0; i < height; i++) {
+        row_pointers[i] = (png_bytep) calloc(3 * width, sizeof(png_byte));
     }
     
-    // image_bounds[0] = startX, image_bounds[1] = endX,
-    // image_bounds[2] = width, image_bounds[3] = height
-    int i = canvas_width * image_bounds[0] + image_bounds[1];
+    int i = canvas_width * start_y + start_x;
     while (i < canvas_width * canvas_height) {
-        memcpy(&row_pointers
-                    [i / canvas_width - image_bounds[1]] // y
-                    [3 * (i % canvas_width - image_bounds[0])], // x
-              default_palette[chunk.memory[i]], 3); // colour
+        printf("%i, %i\n", i / canvas_width - start_y, (i % canvas_width - start_x));
+        
+        // Copy over colour to image
+        char* position = &row_pointers
+            [i / canvas_width - start_y] //x
+            [3 * (i % canvas_width - start_x)]; //y
+        for (int p = 0; p < 3; p++) {
+            position[p] = default_palette[chunk.memory[i]][p]; // colour
+        }
         i++;
 
-        // If we exceed width, go to next row, otherwise continue
-        if (i % canvas_width < image_bounds[0] + image_bounds[2]) {
+        // If we exceed width, go to next row, otherwise keep drawing on this row
+        if (i % canvas_width < start_x + width) {
             continue; 
         }
 
         // If we exceed end bottom, we are done drawing this
-        if (i / canvas_width == image_bounds[1] + image_bounds[3] - 1) {
+        if (i / canvas_width >= start_y + height - 1) {
             break; 
         }
         
-        i += canvas_width - image_bounds[2];
+        i += canvas_width - width;
     }
 
     png_write_image(png_ptr, row_pointers);
 
-    for (int i = 0; i < image_bounds[3]; i++) {
+    for (int i = 0; i < height; i++) {
         free(row_pointers[i]);
     }
 
@@ -248,7 +305,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     int max_response_length = strlen(canvas_url) + strlen(canvas_name) + 37;
     char* response = malloc(max_response_length); 
     snprintf(response, max_response_length, "Image at %i %i on `%s`, source: %s",
-        image_bounds[0], image_bounds[1], canvas_name, canvas_url);
+        start_x, start_y, canvas_name, canvas_url);
         
 
     struct discord_create_message params = {
