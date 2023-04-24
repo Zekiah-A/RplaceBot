@@ -6,6 +6,7 @@
 #include <png.h>
 #include <string.h>
 #include <sys/param.h>
+#include <pthread.h>
 
 struct memory_fetch {
     size_t size;
@@ -52,6 +53,8 @@ char default_palette[32][3] = {
     { 212, 215, 217 },
     { 255, 255, 255 }
 };
+
+pthread_mutex_t fetch_lock;
 
 // You will have to install concord separately unfortunately as the library itself
 // does not implement a cmakelists.txt to be compiled alongside this project as a gitmodule
@@ -186,6 +189,8 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     // Reassure client that we have stared before we do any heavy lifting
     discord_create_reaction(client, event->channel_id, event->id,
                             0, "✅", NULL);
+    // Lock before we fetch to ensure no overlapping curl actions
+    pthread_mutex_lock(&fetch_lock);
 
     // Fetch and render canvas
     char* stream_buffer = NULL;
@@ -223,7 +228,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         int boardI = 0;
         int colour = 0;
 
-       for (int i = 0; i < chunk.size; i++) {
+        for (int i = 0; i < chunk.size; i++) {
             // Then it is a palette value
             if (i % 2 == 0) {
                 colour = chunk.memory[i];
@@ -243,20 +248,35 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     }
 
     png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    if (!png_ptr) {
+    if (png_ptr == NULL) {
         struct discord_create_message params = { .content =
             "Sorry, an unexpected drawing error ocurred and I can't create an image of that canvas, "
             "please try again later." };
         discord_create_message(client, event->channel_id, &params, NULL);
+
+        // Cleanup resources
+        png_destroy_write_struct(&png_ptr, NULL);
+        free(chunk.memory);
+        fclose(memory_stream);
+        free(stream_buffer);
+        curl_easy_cleanup(curl);
+        pthread_mutex_unlock(&fetch_lock);
         return;
     }
 
     png_infop info_ptr = png_create_info_struct(png_ptr);
-    if (!info_ptr) {
+    if (info_ptr == NULL) {
         struct discord_create_message params = { .content =
             "Sorry, an unexpected drawing error ocurred and I can't create an image of that canvas, "
             "please try again later." };
+        
+        // Cleanup resources
         png_destroy_write_struct(&png_ptr, NULL);
+        free(chunk.memory);
+        fclose(memory_stream);
+        free(stream_buffer);
+        curl_easy_cleanup(curl);
+        pthread_mutex_unlock(&fetch_lock);
         return;
     }
 
@@ -323,11 +343,13 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     };
     discord_create_message(client, event->channel_id, &params, NULL);
     
+    // Cleanup
     free(response);
     free(chunk.memory);
     fclose(memory_stream);
     free(stream_buffer);
     curl_easy_cleanup(curl);
+    pthread_mutex_unlock(&fetch_lock);
     png_destroy_write_struct(&png_ptr, &info_ptr);
 }
 
@@ -336,6 +358,11 @@ int main(int argc, char* argv[]) {
 
     ccord_global_init();
     struct discord* client = discord_config_init(config_file);
+
+    if (pthread_mutex_init(&fetch_lock, NULL) != 0) {
+        printf("[CRITICAL] Failed to init fetch lock mutex. Bot can not run.\n");
+        return 1;
+    }
 
     discord_set_on_ready(client, &on_ready);
     discord_set_on_command(client, "view", &on_canvas_mention);
@@ -346,4 +373,5 @@ int main(int argc, char* argv[]) {
 
     discord_cleanup(client);
     ccord_global_cleanup();
+    pthread_mutex_destroy(&fetch_lock);
 }
