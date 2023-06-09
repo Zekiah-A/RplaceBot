@@ -200,6 +200,9 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
             return;
         }
 
+        scaled_width = width;
+        scaled_height = height;
+
         arg = strtok_r(NULL, " ", &count_state);
         if (arg != NULL) {
             int len = strlen(arg);
