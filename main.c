@@ -7,19 +7,21 @@
 #include <string.h>
 #include <sys/param.h>
 #include <pthread.h>
+#include <stdint.h>
+#include <alloca.h>
 
 struct memory_fetch {
     size_t size;
-    char* memory;
+    uint8_t* memory;
 };
 
 struct colour {
-    char red;
-    char green;
-    char blue;
+    uint8_t red;
+    uint8_t green;
+    uint8_t blue;
 };
 
-char default_palette[32][3] = {
+uint8_t default_palette[32][3] = {
     { 109, 0, 26 },
     { 190, 0, 57 },
     { 255, 69, 0 },
@@ -70,7 +72,7 @@ static size_t write_fetch(void* contents, size_t size, size_t nmemb, void* userp
     size_t data_size = size * nmemb;
     struct memory_fetch* fetch = (struct memory_fetch*) userp;
 
-    char* new_memory = realloc(fetch->memory, fetch->size + data_size + 1);
+    uint8_t* new_memory = realloc(fetch->memory, fetch->size + data_size + 1);
     if (new_memory == NULL) {
         printf("Out of memory, can not carry out fetch reallocation\n");
         return 0;
@@ -88,7 +90,7 @@ void on_help(struct discord* client, const struct discord_message* event) {
     struct discord_embed embed = {
         .title = "Commands",
         .description =
-            "**r/view** `canvas1/canvas2/turkeycanvas/...` `x` `y` `w` `h` \n*Create an image from a region of the canvas*\n\n"
+            "**r/view** `canvas1/canvas2/turkeycanvas/...` `x` `y` `width` `height` `z` \n*Create an image from a region of the canvas*\n\n"
             "**r/help**, **r/?**, **r/** \n*Displays information about this bot*\n\n",
         .color = 0xFF4500,
         .footer = &(struct discord_embed_footer) {
@@ -134,7 +136,8 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     else {
         struct discord_create_message params = { .content =
             "At the moment, custom canvases URLs are not supported.\n"
-            "Try r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h`" };
+            "Format: r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`\n"
+            "Try: r/view canvas1 10 10 100 100 2x" };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
@@ -143,47 +146,68 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     int start_y = 0;
     int width = canvas_width - 1;
     int height = canvas_height - 1;
+    int scale = 1;
+    int scaled_width = width;
+    int scaled_height = height
+
+    arg = strtok_r(NULL, " ", &count_state);
+    if (arg == NULL) {
+        struct discord_create_message params = { .content =
+            "Start X argument not supplied, use this command like:\n"
+            "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`" };
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+    start_x = MAX(0, MIN(canvas_width - 1, atoi(arg)));
+
+    arg = strtok_r(NULL, " ", &count_state);
+    if (arg == NULL) {
+        struct discord_create_message params = { .content =
+            "Start Y argument not supplied, use this command like:\n"
+            "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`" };
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+    start_y = MAX(0, MIN(canvas_width - 1, atoi(arg)));
+
+    arg = strtok_r(NULL, " ", &count_state);
+    if (arg == NULL) {
+        struct discord_create_message params = { .content =
+            "Width argument not supplied, use this command like:\n"
+            "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`" };
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+    width = MIN(canvas_width - 1 - start_x, atoi(arg));
+
+    arg = strtok_r(NULL, " ", &count_state);
+    if (arg == NULL) {
+        struct discord_create_message params = { .content =
+            "Height argument not supplied, use this command like:\n"
+            "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`" };
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+    height = MIN(canvas_height - 1 - start_y, atoi(arg));
+
+    if (width <= 0 || height <= 0) {
+        struct discord_create_message params = { .content =
+            "Height or width can not be zero, use this command like:\n"
+            "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`" };
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
 
     arg = strtok_r(NULL, " ", &count_state);
     if (arg != NULL) {
-        start_x = MAX(0, MIN(canvas_width - 1, atoi(arg)));
-
-        arg = strtok_r(NULL, " ", &count_state);
-        if (arg == NULL) {
-            struct discord_create_message params = { .content =
-                "Start Y argument not supplied, use this command like:\n"
-                "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h`" };
-            discord_create_message(client, event->channel_id, &params, NULL);
-            return;
+        int len = strlen(arg);
+        if (arg[len - 1] == 'x') {
+            arg[len - 1] = '\0';
         }
-        start_y = MAX(0, MIN(canvas_width - 1, atoi(arg)));
-
-        arg = strtok_r(NULL, " ", &count_state);
-        if (arg == NULL) {
-            struct discord_create_message params = { .content =
-                "Width argument not supplied, use this command like:\n"
-                "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h`" };
-            discord_create_message(client, event->channel_id, &params, NULL);
-            return;
-        }
-        width = MIN(canvas_width - 1 - start_x, atoi(arg));
-
-        arg = strtok_r(NULL, " ", &count_state);
-        if (arg == NULL) {
-            struct discord_create_message params = { .content =
-                "Height argument not supplied, use this command like:\n"
-                "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h`" };
-            discord_create_message(client, event->channel_id, &params, NULL);
-            return;
-        }
-        height = MIN(canvas_height - 1 - start_y, atoi(arg));
-
-        if (width <= 0 || height <= 0) {
-            struct discord_create_message params = { .content =
-                "Height or width can not be zero, use this command like:\n"
-                "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h`" };
-            discord_create_message(client, event->channel_id, &params, NULL);
-        }
+        
+        scale = MAX(1, MIN(10, atoi(arg));
+        scaled_width = width * scale;
+        scaled_height = height * scale;
     }
     
     // Reassure client that we have stared before we do any heavy lifting
@@ -193,7 +217,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     pthread_mutex_lock(&fetch_lock);
 
     // Fetch and render canvas
-    char* stream_buffer = NULL;
+    uint8_t* stream_buffer = NULL;
     size_t stream_length = 0;
     FILE* memory_stream = open_memstream(&stream_buffer, &stream_length);
     CURL* curl = curl_easy_init();
@@ -221,10 +245,9 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     }
 
     // Then this is a new format (RLE encoded) board that must be decoded
-    if (chunk.size < canvas_width * canvas_height)
-    {
+    if (chunk.size < canvas_width * canvas_height) {
         int decoded_size = canvas_width * canvas_height;
-        char* decoded_board = malloc(decoded_size);
+        uint8_t* decoded_board = malloc(decoded_size);
         int boardI = 0;
         int colour = 0;
 
@@ -281,21 +304,22 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     }
 
     png_init_io(png_ptr, memory_stream);
-    png_set_IHDR(png_ptr, info_ptr, width, height, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    png_set_IHDR(png_ptr, info_ptr, scaled_width, scaled_height, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
     png_write_info(png_ptr, info_ptr);
 
-    png_bytep row_pointers[height];
+    png_bytep row_pointers[scaled_height]; // 2D ptr array
     
-    for (int i = 0; i < height; i++) {
-        row_pointers[i] = (png_bytep) calloc(3 * width, sizeof(png_byte));
+    for (int i = 0; i < scaled_height; i++) {
+        row_pointers[i] = (png_bytep) malloc(3 * scaled_width, sizeof(png_byte));
     }
     
     int i = canvas_width * start_y + start_x;
-    while (i < canvas_width * canvas_height) {        
+    while (i < canvas_width * canvas_height) {
         // Copy over colour to image
-        char* position = &row_pointers
-            [i / canvas_width - start_y] //x
-            [3 * (i % canvas_width - start_x)]; //y
+        uint8_t* position = &row_pointers
+            [i / canvas_width - start_y] // x
+            [3 * (i % canvas_width - start_x)]; // y
+
         for (int p = 0; p < 3; p++) {
             position[p] = default_palette[chunk.memory[i]][p]; // colour
         }
@@ -316,7 +340,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
 
     png_write_image(png_ptr, row_pointers);
 
-    for (int i = 0; i < height; i++) {
+    for (int i = 0; i < scaled_height; i++) {
         free(row_pointers[i]);
     }
 
@@ -325,7 +349,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
 
     // At minimum, may be "Image at 65535 65535 on ``, source: " (length 36 + 1 (\0))
     int max_response_length = strlen(canvas_url) + strlen(canvas_name) + 37;
-    char* response = malloc(max_response_length); 
+    char* response = alloca(max_response_length); 
     snprintf(response, max_response_length, "Image at %i %i on `%s`, source: %s",
         start_x, start_y, canvas_name, canvas_url);
         
@@ -344,7 +368,6 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     discord_create_message(client, event->channel_id, &params, NULL);
     
     // Cleanup
-    free(response);
     free(chunk.memory);
     fclose(memory_stream);
     free(stream_buffer);
