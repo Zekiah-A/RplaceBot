@@ -150,66 +150,61 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     int scaled_width = width;
     int scaled_height = height
 
-    arg = strtok_r(NULL, " ", &count_state);
-    if (arg == NULL) {
-        struct discord_create_message params = { .content =
-            "Start X argument not supplied, use this command like:\n"
-            "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`" };
-        discord_create_message(client, event->channel_id, &params, NULL);
-        return;
-    }
-    start_x = MAX(0, MIN(canvas_width - 1, atoi(arg)));
-
-    arg = strtok_r(NULL, " ", &count_state);
-    if (arg == NULL) {
-        struct discord_create_message params = { .content =
-            "Start Y argument not supplied, use this command like:\n"
-            "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`" };
-        discord_create_message(client, event->channel_id, &params, NULL);
-        return;
-    }
-    start_y = MAX(0, MIN(canvas_width - 1, atoi(arg)));
-
-    arg = strtok_r(NULL, " ", &count_state);
-    if (arg == NULL) {
-        struct discord_create_message params = { .content =
-            "Width argument not supplied, use this command like:\n"
-            "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`" };
-        discord_create_message(client, event->channel_id, &params, NULL);
-        return;
-    }
-    width = MIN(canvas_width - 1 - start_x, atoi(arg));
-
-    arg = strtok_r(NULL, " ", &count_state);
-    if (arg == NULL) {
-        struct discord_create_message params = { .content =
-            "Height argument not supplied, use this command like:\n"
-            "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`" };
-        discord_create_message(client, event->channel_id, &params, NULL);
-        return;
-    }
-    height = MIN(canvas_height - 1 - start_y, atoi(arg));
-
-    if (width <= 0 || height <= 0) {
-        struct discord_create_message params = { .content =
-            "Height or width can not be zero, use this command like:\n"
-            "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`" };
-        discord_create_message(client, event->channel_id, &params, NULL);
-        return;
-    }
-
+    // No arguments is allowed as it will just do a 1:1 full canvas preview
     arg = strtok_r(NULL, " ", &count_state);
     if (arg != NULL) {
-        int len = strlen(arg);
-        if (arg[len - 1] == 'x') {
-            arg[len - 1] = '\0';
+        start_x = MAX(0, MIN(canvas_width - 1, atoi(arg)));
+
+        arg = strtok_r(NULL, " ", &count_state);
+        if (arg == NULL) {
+            struct discord_create_message params = { .content =
+                "Start Y argument not supplied, use this command like:\n"
+                "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`" };
+            discord_create_message(client, event->channel_id, &params, NULL);
+            return;
         }
-        
-        scale = MAX(1, MIN(10, atoi(arg));
-        scaled_width = width * scale;
-        scaled_height = height * scale;
+        start_y = MAX(0, MIN(canvas_width - 1, atoi(arg)));
+
+        arg = strtok_r(NULL, " ", &count_state);
+        if (arg == NULL) {
+            struct discord_create_message params = { .content =
+                "Width argument not supplied, use this command like:\n"
+                "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`" };
+            discord_create_message(client, event->channel_id, &params, NULL);
+            return;
+        }
+        width = MIN(canvas_width - 1 - start_x, atoi(arg));
+
+        arg = strtok_r(NULL, " ", &count_state);
+        if (arg == NULL) {
+            struct discord_create_message params = { .content =
+                "Height argument not supplied, use this command like:\n"
+                "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`" };
+            discord_create_message(client, event->channel_id, &params, NULL);
+            return;
+        }
+        height = MIN(canvas_height - 1 - start_y, atoi(arg));
+
+        if (width <= 0 || height <= 0) {
+            struct discord_create_message params = { .content =
+                "Height or width can not be zero, use this command like:\n"
+                "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`" };
+            discord_create_message(client, event->channel_id, &params, NULL);
+            return;
+        }
+
+        arg = strtok_r(NULL, " ", &count_state);
+        if (arg != NULL) {
+            int len = strlen(arg);
+            if (arg[len - 1] == 'x') {
+                arg[len - 1] = '\0';
+            }
+            
+            scale = MAX(1, MIN(10, atoi(arg));
+            scaled_width = width * scale;
+            scaled_height = height * scale;
+        }
     }
-    
     // Reassure client that we have stared before we do any heavy lifting
     discord_create_reaction(client, event->channel_id, event->id,
                             0, "✅", NULL);
