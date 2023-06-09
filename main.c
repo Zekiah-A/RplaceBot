@@ -58,8 +58,11 @@ uint8_t default_palette[32][3] = {
 
 pthread_mutex_t fetch_lock;
 
+// RplaceBot (c) Zekiah-A - BUILD INSTRUCTIONS:
 // You will have to install concord separately unfortunately as the library itself
 // does not implement a cmakelists.txt to be compiled alongside this project as a gitmodule
+// You will also have to self compile CURL with websocket support if you receive 'curl_easy_perform() failed: Unsupported protocol'
+// error messages. To check if your cURL has support, run curl --version and check for ws/wss protocols present.
 // This project can be compiled easily with gcc main.c -o RplaceBot -pthread -ldiscord -lcurl -lpng
 void on_ready(struct discord* client, const struct discord_ready* event) {
     log_info("Rplace canvas bot succesfully connected to Discord as %s#%s!",
@@ -91,7 +94,8 @@ void on_help(struct discord* client, const struct discord_message* event) {
         .title = "Commands",
         .description =
             "**r/view** `canvas1/canvas2/turkeycanvas/...` `x` `y` `width` `height` `z` \n*Create an image from a region of the canvas*\n\n"
-            "**r/help**, **r/?**, **r/** \n*Displays information about this bot*\n\n",
+            "**r/help**, **r/?**, **r/** \n*Displays information about this bot*\n\n"
+            "**r/status** `canvas1/canvas2/turkeycanvas/...` \n*Displays if the provided canvas is online or not*\n\n",
         .color = 0xFF4500,
         .footer = &(struct discord_embed_footer) {
             .text = "https://rplace.tk, bot by Zekiah-A",
@@ -111,7 +115,10 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
 
     char* count_state = NULL;
     char* arg = strtok_r(event->content, " ", &count_state);
-    if (arg == NULL) return;
+    if (arg == NULL) {
+        on_help(client, event);
+        return;
+    }
     char* canvas_name = arg;
     char* canvas_url = NULL;
     int canvas_width = 0;
@@ -148,7 +155,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     int height = canvas_height - 1;
     int scale = 1;
     int scaled_width = width;
-    int scaled_height = height
+    int scaled_height = height;
 
     // No arguments is allowed as it will just do a 1:1 full canvas preview
     arg = strtok_r(NULL, " ", &count_state);
@@ -200,7 +207,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
                 arg[len - 1] = '\0';
             }
             
-            scale = MAX(1, MIN(10, atoi(arg));
+            scale = MAX(1, MIN(10, atoi(arg)));
             scaled_width = width * scale;
             scaled_height = height * scale;
         }
@@ -212,7 +219,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     pthread_mutex_lock(&fetch_lock);
 
     // Fetch and render canvas
-    uint8_t* stream_buffer = NULL;
+    char* stream_buffer = NULL;
     size_t stream_length = 0;
     FILE* memory_stream = open_memstream(&stream_buffer, &stream_length);
     CURL* curl = curl_easy_init();
@@ -305,7 +312,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     png_bytep row_pointers[scaled_height]; // 2D ptr array
     
     for (int i = 0; i < scaled_height; i++) {
-        row_pointers[i] = (png_bytep) malloc(3 * scaled_width, sizeof(png_byte));
+        row_pointers[i] = (png_bytep) malloc(3 * scaled_width);
     }
     
     int i = canvas_width * start_y + start_x;
@@ -371,6 +378,91 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     png_destroy_write_struct(&png_ptr, &info_ptr);
 }
 
+void on_status(struct discord* client, const struct discord_message* event) {
+    char* count_state = NULL;
+    char* canvas_name = strtok_r(event->content, " ", &count_state);
+    char* ws_url = NULL;
+    char online = 0;
+    char inbuilt_canvas = 1;
+    if (canvas_name == NULL) {
+        on_help(client, event);
+        return;
+    }
+
+    if (strcmp(canvas_name, "canvas1") == 0) {
+        ws_url = "wss://server.rplace.tk:443";
+    }
+    else if (strcmp(canvas_name, "canvas2") == 0) { 
+        ws_url = "wss://server.poemanthology.org/ws";
+    }
+    else if (strcmp(canvas_name, "turkeycanvas") == 0)  {
+        ws_url = "wss://server.poemanthology.org/turkeyws";
+    }
+    else {
+        // inbuilt_canvas = 0;
+        struct discord_create_message params = { .content =
+            "At the moment, custom canvases URLs are not supported.\n"
+            "Format: r/status `canvas1/canvas2/turkeycanvas/...`\n"
+            "Try: r/status canvas1" };
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+
+    pthread_mutex_lock(&fetch_lock);
+    CURL* curl = curl_easy_init();
+    CURLcode result;
+
+    struct curl_slist* headers = NULL;
+    headers = curl_slist_append(headers, "Origin: https://rplace.tk");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_URL, ws_url);
+    curl_easy_setopt(curl, CURLOPT_WS_OPTIONS, CURLWS_RAW_MODE);
+    curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 2L);
+
+    result = curl_easy_perform(curl);
+    online = result == CURLE_OK;
+    
+    if (result != CURLE_OK) {
+        online = 0;
+        log_error("Status grab failed: curl_easy_perform() %s", curl_easy_strerror(result));
+    }
+    else {
+        long close_code;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &close_code);
+        if (close_code != 0) online = 0;
+    }
+    
+    char* response = NULL; 
+    if (inbuilt_canvas) {
+        int max_response_length = strlen(canvas_name) + strlen(ws_url) + 47; //  17 + 25 + 1
+        response = alloca(max_response_length);
+        snprintf(response, max_response_length, "Status of %s: %s\n\n(%s)", canvas_name,
+            online ? "**Online** :white_check_mark:" : "**Offline** :x:", ws_url);
+    }
+    else {
+        int max_response_length = strlen(ws_url) + 52; // 26 + 25 + 1
+        response = alloca(max_response_length);
+        snprintf(response, max_response_length, "Custom canvas status: %s\n\n(%s)",
+            online ? "**Online** :white_check_mark:" : "**Offline** :x:", ws_url);
+    }
+
+    struct discord_embed embed = {
+        .title = "Status",
+        .description = response,
+        .color = 0xFF4500,
+        .footer = NULL
+    };
+    
+    struct discord_create_message params = {
+        .embeds = &(struct discord_embeds) { .size = 1, .array = &embed }
+    };
+    discord_create_message(client, event->channel_id, &params, NULL);
+
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    pthread_mutex_unlock(&fetch_lock);
+}
+
 int main(int argc, char* argv[]) {
     const char* config_file = "config.json";
 
@@ -385,6 +477,7 @@ int main(int argc, char* argv[]) {
     discord_set_on_ready(client, &on_ready);
     discord_set_on_command(client, "view", &on_canvas_mention);
     discord_set_on_command(client, "help", &on_help);
+    discord_set_on_command(client, "status", &on_status);
     discord_set_on_command(client, "", &on_help);
     discord_set_on_commands(client, (char*[]){ "help", "?", "" }, 3,  &on_help);
     discord_run(client);
