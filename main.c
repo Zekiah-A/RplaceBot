@@ -318,12 +318,29 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     int i = canvas_width * start_y + start_x;
     while (i < canvas_width * canvas_height) {
         // Copy over colour to image
-        uint8_t* position = &row_pointers
-            [i / canvas_width - start_y] // x
-            [3 * (i % canvas_width - start_x)]; // y
 
-        for (int p = 0; p < 3; p++) {
-            position[p] = default_palette[chunk.memory[i]][p]; // colour
+        int x = i / canvas_width - start_y; // image x (assuming image scale 1:1 with canvas)
+        int y = 3 * (i % canvas_width - start_x); // image y (assuming image scale 1:1 with canvas + accounting for 3 byte colour)
+
+        if (scale == 1) {
+            uint8_t* position = &row_pointers[x][y];
+
+            for (int p = 0; p < 3; p++) {
+                position[p] = default_palette[chunk.memory[i]][p]; // colour
+            }
+        }
+        else {
+            for (int sx = 0; sx < scale; sx++) {
+                for (int sy = 0; sy < scale; sy++) {
+                    uint8_t* position = &row_pointers
+                        [x * scale + sx] // We project X to upscaled X position
+                        [y * scale + sy * 3]; // We project Y to upscaled Y position
+                    
+                    for (int p = 0; p < 3; p++) {
+                        position[p] = default_palette[chunk.memory[i]][p]; // colour
+                    }
+                }
+            }
         }
         i++;
 
@@ -336,7 +353,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         if (i / canvas_width >= start_y + height - 1) {
             break; 
         }
-        
+
         i += canvas_width - width;
     }
 
