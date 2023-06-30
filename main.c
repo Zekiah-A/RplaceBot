@@ -126,7 +126,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
 
     // Read parameters from message
     if (strcmp(arg, "canvas1") == 0) {
-        canvas_url = "https://raw.githubusercontent.com/rslashplace2/rslashplace2.github.io/main/place";
+        canvas_url = "https://raw.githubusercontent.com/rplacetk/canvas1/main/place";
         canvas_width = 1000;
         canvas_height = 1000;
     }
