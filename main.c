@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <alloca.h>
+#include <regex.h>
 
 struct memory_fetch {
     size_t size;
@@ -130,6 +131,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         canvas_width = 1000;
         canvas_height = 1000;
     }
+    /*
     else if (strcmp(arg, "canvas2") == 0) {
         canvas_url = "https://server.poemanthology.org/place";
         canvas_width = 500;
@@ -140,6 +142,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         canvas_width = 250;
         canvas_height = 250;
     }
+    */
     else {
         struct discord_create_message params = { .content =
             "At the moment, custom canvases URLs are not supported.\n"
@@ -483,6 +486,22 @@ void on_status(struct discord* client, const struct discord_message* event) {
     pthread_mutex_unlock(&fetch_lock);
 }
 
+regex_t rplace_over_regex;
+
+void on_message(struct discord* client, const struct discord_message* event) {
+    // Execute the regular expression
+    int reti = regexec(&rplace_over_regex, event->content, 0, NULL, 0);
+    if (!reti) {
+        struct discord_create_message params = { .content = "rplace.live is forever" };
+        discord_create_message(client, event->channel_id, &params, NULL);
+    }
+    else if (reti != REG_NOMATCH) {
+        char error_buffer[100];
+        regerror(reti, &rplace_over_regex, error_buffer, sizeof(error_buffer));
+        fprintf(stderr, "Regex match failed: %s\n", error_buffer);
+    }
+}
+
 int main(int argc, char* argv[]) {
     const char* config_file = "config.json";
 
@@ -494,15 +513,25 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    char* rplace_over_pattern = "r\/?place[^.\\n]+(closed|ended|over|finished|shutdown|done|stopped)";
+
+    // Compile the regular expression
+    if (regcomp(&rplace_over_regex, rplace_over_pattern, REG_EXTENDED)) {
+        fprintf(stderr, "[CRITICAL] Could not compile 'rplace over' regex. Bot can not run.\n\n");
+        return 1;
+    }
+
     discord_set_on_ready(client, &on_ready);
     discord_set_on_command(client, "view", &on_canvas_mention);
     discord_set_on_command(client, "help", &on_help);
     discord_set_on_command(client, "status", &on_status);
     discord_set_on_command(client, "", &on_help);
     discord_set_on_commands(client, (char*[]){ "help", "?", "" }, 3,  &on_help);
+    discord_set_on_message_create(client, &on_message);
     discord_run(client);
 
     discord_cleanup(client);
     ccord_global_cleanup();
     pthread_mutex_destroy(&fetch_lock);
+    regfree(&rplace_over_regex);
 }
