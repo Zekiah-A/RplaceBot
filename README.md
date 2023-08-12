@@ -34,18 +34,37 @@ Create rplace_bot.json for bot-specific functionality like the following
     "view_canvases": {
         "canvas1": {
             "socket": "wss://server.rplace.live:443",
-            "http": "https://raw.githubusercontent.com/rplacetk/canvas1/main/place"
+            "http": "https://raw.githubusercontent.com/rplacetk/canvas1/main/place",
+            "width": 1000,
+            "height": 1000
         },
         "canvas2": {
             "socket": "wss://server.poemanthology.org/ws",
-            "http": "https://server.poemanthology.org/place"
+            "http": "https://server.poemanthology.org/place",
+            "width": 500,
+            "height": 500
         },
         "turkeycanvas": {
             "socket": "wss://server.poemanthology.org/turkeyws",
-            "http": "https://server.poemanthology.org/turkeyplace"
+            "http": "https://server.poemanthology.org/turkeyplace",
+            "width": 250,
+            "height": 250
         }
     }
 }
 ```
-Note:
- - mod_roles must be an array of strings due to parsing library limitations.
+## Build instructions:
+ - You will have to install concord separately unfortunately as the library itself
+does not implement a cmakelists.txt to be compiled alongside this project as a gitmodule
+
+ - You will also have to self compile CURL with websocket support if you receive 'curl_easy_perform() failed: Unsupported protocol'
+error messages. To check if your cURL has support, run curl --version and check for ws/wss protocols present.
+
+ - This project can be compiled easily with `gcc main.c lib/parson.c lib/parson.h -o RplaceBot -pthread -ldiscord -lcurl -lpng -lsqlite3` and ran with ./RplaceBot.
+
+## Notes:
+ - mod_roles in rplace_bot.json must be an array of strings due to parsing library limitations.
+ - Bot data is stored in a SQLITE DB file called `rplace_bot.db`.
+ - A helper script `edit-db.py` is provided to help with quickly editing the database.
+It requires pip package `sqlite3` and `prompt_toolkit` the latter can be installed with
+`python3 -m pip install prompt_toolkit`.

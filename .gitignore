@@ -60,3 +60,5 @@ RplaceBot
 bot.log
 http.log
 rplace_bot.json
+rplace_bot.db
+edit_db_history.txt

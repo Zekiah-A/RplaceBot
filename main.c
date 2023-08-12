@@ -1,3 +1,9 @@
+// RplaceBot (c) Zekiah-A - BUILD INSTRUCTIONS:
+// You will have to install concord separately unfortunately as the library itself
+// does not implement a cmakelists.txt to be compiled alongside this project as a gitmodule
+// You will also have to self compile CURL with websocket support if you receive 'curl_easy_perform() failed: Unsupported protocol'
+// error messages. To check if your cURL has support, run curl --version and check for ws/wss protocols present.
+// This project can be compiled easily with gcc main.c lib/parson.c lib/parson.h -o RplaceBot -pthread -ldiscord -lcurl -lpng -lsqlite3
 #include <stdio.h>
 #include <stdlib.h>
 #include <concord/discord.h>
@@ -10,6 +16,9 @@
 #include <stdint.h>
 #include <alloca.h>
 #include <regex.h>
+#include <sqlite3.h>
+#include <signal.h>
+#include <time.h>
 #include "lib/parson.h"
 
 struct memory_fetch {
@@ -35,6 +44,8 @@ struct view_canvas {
     char* name;
     char* socket;
     char* http;
+    int width;
+    int height;
 };
 
 struct config* rplace_config;
@@ -76,43 +87,46 @@ uint8_t default_palette[32][3] = {
 
 pthread_mutex_t fetch_lock;
 
-// RplaceBot (c) Zekiah-A - BUILD INSTRUCTIONS:
-// You will have to install concord separately unfortunately as the library itself
-// does not implement a cmakelists.txt to be compiled alongside this project as a gitmodule
-// You will also have to self compile CURL with websocket support if you receive 'curl_easy_perform() failed: Unsupported protocol'
-// error messages. To check if your cURL has support, run curl --version and check for ws/wss protocols present.
-// This project can be compiled easily with gcc main.c lib/parson.c lib/parson.h -o RplaceBot -pthread -ldiscord -lcurl -lpng
+sqlite3* bot_db;
+int db_err;
+char* db_err_msg;
+
+struct discord* _discord_client;
+int requested_sigint = 0;
+
+void handle_sigint(int signum)
+{
+    if (requested_sigint)
+    {
+        printf("\rForce quitting!");
+        exit(1);
+    }
+
+    if (signum == SIGINT)
+    {
+        printf("\nPerforming cleanup. Wait a sec!\n");
+        sqlite3_close(bot_db);
+        discord_shutdown(_discord_client);
+        requested_sigint = 1;
+    }
+}
+
 void on_ready(struct discord* client, const struct discord_ready* event)
 {
     log_info("Rplace canvas bot succesfully connected to Discord as %s#%s!",
              event->user->username, event->user->discriminator);
 }
 
-
-static size_t write_fetch(void* contents, size_t size, size_t nmemb, void* userp) {
-    // Size*  number of elements
-    size_t data_size = size*  nmemb;
-    struct memory_fetch* fetch = (struct memory_fetch*) userp;
-
-    uint8_t* new_memory = realloc(fetch->memory, fetch->size + data_size + 1);
-    if (new_memory == NULL) {
-        printf("Out of memory, can not carry out fetch reallocation\n");
-        return 0;
-    }
-
-    fetch->memory = new_memory;
-    memcpy(&(fetch->memory[fetch->size]), contents, data_size);
-    fetch->size += data_size;
-    fetch->memory[fetch->size] = 0;
-
-    return data_size;
-}
-
 int check_member_has_mod(struct discord* client, u64snowflake guild_id, u64snowflake member_id)
 {
-    struct discord_guild_member guild_member = {};
+    struct discord_guild_member guild_member = { .roles = NULL };
     struct discord_ret_guild_member guild_member_ret = {.sync = &guild_member};
     discord_get_guild_member(client, guild_id, member_id, &guild_member_ret);
+
+    if (guild_member.roles == NULL || rplace_config == NULL || rplace_config->mod_roles == NULL)
+    {
+        return 0;
+    }
 
     int has_mod = 0;
     for (int i = 0; i < guild_member.roles->size; i++)
@@ -143,8 +157,8 @@ void mod_help(struct discord* client, const struct discord_message* event)
 
     if (check_member_has_mod(client, event->guild_id, event->author->id))
     {
-        embed.description = "**r/1984** `member` `period` `reason`\nDelete all the messages sent by a user for a given period of time\n\n"
-            "**r/purge** `message count*` `member id (optional)`\nClear n message history of a user, or of a channel (if no member_id, max: 100 messages per 2 hours)\n\n";
+        embed.description = "**r/1984** `member` `period(s|m|h|d)` `reason`\nHide all the messages a user sends for a given period of time\n\n"
+            "**r/purge** `message count*` `member id (optional)`\nClear 'n' message history of a user, or of a channel (if no member_id, max: 100 messages per 2 hours)\n\n";
     }
     else
     {
@@ -156,6 +170,137 @@ void mod_help(struct discord* client, const struct discord_message* event)
         .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
 
     discord_create_message(client, event->channel_id, &params, NULL);
+}
+
+void on_1984(struct discord* client, const struct discord_message* event)
+{
+    struct discord_embed embed = {
+        .title = "Moderation action - 1984 user",
+        .color = 0xFF4500,
+        .footer = &(struct discord_embed_footer) {
+            .text = "https://rplace.live, bot by Zekiah-A",
+            .icon_url = "https://github.com/rslashplace2/rslashplace2.github.io/raw/main/favicon.png"}};
+
+
+    if (!check_member_has_mod(client, event->guild_id, event->author->id))
+    {
+        embed.description = "Sorry. You need moderator or higher permissions to be able to use this command!";
+        embed.image = &(struct discord_embed_image) {
+            .url = "https://media.tenor.com/qmSIzc-H7vIAAAAC/1984.gif" };
+
+        struct discord_create_message params = {
+            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+
+    char* count_state = NULL;
+    char* arg = strtok_r(event->content, " ", &count_state);
+    if (arg == NULL)
+    {
+        mod_help(client, event);
+        return;
+    }
+
+    u64snowflake member_id = strtoull(arg, NULL, 10);
+    if (check_member_has_mod(client, event->guild_id, member_id))
+    {
+        embed.description = "Sorry. You can not 1984 another moderator!";
+        struct discord_create_message params = {
+            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+
+    arg = strtok_r(NULL, " ", &count_state);
+    if (arg == NULL)
+    {
+        mod_help(client, event);
+        return;
+    }
+
+    // We assume it is in seconds naturally
+    int period_multiplier = 1;
+    int period_original = 0;
+    char* period_unit = "seconds"; 
+    int period_len = strlen(arg);
+
+    if (arg[period_len - 1] == 'm')
+    {
+        period_multiplier = 60;
+        period_unit = "minutes";
+    }
+    else if (arg[period_len - 1] == 'h')
+    {
+        period_multiplier = 3600;
+        period_unit = "hours";
+    }
+    else if (arg[period_len - 1] == 'd')
+    {
+        period_multiplier = 86400;
+        period_unit = "days";
+    }
+    arg[period_len - 1] = '\0';
+    period_original = atoi(arg);
+    int period_s = period_original * period_multiplier;
+    if (period_s > 31540000) // 365 days
+    {
+        embed.description = "Sorry. That 1984 is too massive! (Maximum 365 days).";
+        struct discord_create_message params = {
+            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+
+    char* reason = NULL;
+    if (strlen(count_state) > 300)
+    {
+        count_state[300] = '\0';
+    }
+    reason = strdup(count_state);
+
+    const char* query_1984 = "INSERT INTO Censors (member_id, moderator_id, censor_start, censor_end, reason) VALUES (?, ?, ?, ?, ?)";
+    sqlite3_stmt *cmp_statement; // Compiled query statement
+    time_t current_time = time(NULL); // Unix timestamp since epoch
+
+    if (sqlite3_prepare_v2(bot_db, query_1984, -1, &cmp_statement, 0) == SQLITE_OK)
+    {
+        sqlite3_bind_int64(cmp_statement, 1, member_id);
+        sqlite3_bind_int64(cmp_statement, 2, event->author->id);
+        sqlite3_bind_int64(cmp_statement, 3, current_time);
+        sqlite3_bind_int64(cmp_statement, 4, current_time + period_s);
+        sqlite3_bind_text(cmp_statement, 5, reason, -1, SQLITE_TRANSIENT);
+
+        if (sqlite3_step(cmp_statement) != SQLITE_DONE)
+        {
+            embed.description = "Failed to 1984 user. Internal bot error occured :skull:";
+            struct discord_create_message params = {
+                .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+            discord_create_message(client, event->channel_id, &params, NULL);
+            return;
+        }
+
+        sqlite3_finalize(cmp_statement);
+    }
+
+    const char* raw_str_1984 = "Successfully 1984ed user **%ld** for **%d %s** (reason: **%s**).";
+    size_t str_1984_len = snprintf(NULL, 0, raw_str_1984, member_id, period_original, period_unit, reason) + 1;
+    char* str_1984 = malloc(str_1984_len);
+    snprintf(str_1984, str_1984_len, raw_str_1984, member_id, period_original, period_unit, reason);
+    str_1984[str_1984_len - 1] = '\0';
+    embed.description = str_1984;
+
+    struct discord_create_message params = {
+        .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+    discord_create_message(client, event->channel_id, &params, NULL);
+
+    free(reason);
+    free(str_1984);
+}
+
+void on_purge(struct discord* client, const struct discord_message* event)
+{
+
 }
 
 void on_help(struct discord* client, const struct discord_message* event)
@@ -178,6 +323,25 @@ void on_help(struct discord* client, const struct discord_message* event)
     discord_create_message(client, event->channel_id, &params, NULL);
 }
 
+size_t fetch_memory_callback(void* contents, size_t size, size_t nmemb, void *userp)
+{
+    size_t realsize = size * nmemb;
+    struct memory_fetch* fetch = (struct memory_fetch*) userp;
+
+    fetch->memory = realloc(fetch->memory, fetch->size + realsize);
+    if (fetch->memory == NULL)
+    {
+        fetch->size = 0;
+        fprintf(stderr, "Not enough memory to continue fetch (realloc returned NULL)\n");
+        return 0;
+    }
+
+    memcpy(&(fetch->memory[fetch->size]), contents, realsize);
+    fetch->size += realsize;
+
+    return realsize;
+}
+
 void on_canvas_mention(struct discord* client, const struct discord_message* event)
 {
     if (event->author->bot)
@@ -196,27 +360,18 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     int canvas_height = 0;
 
     // Read parameters from message
-    if (strcmp(arg, "canvas1") == 0)
-    {
-        canvas_url = "https://raw.githubusercontent.com/rplacetk/canvas1/main/place";
-        canvas_width = 1000;
-        canvas_height = 1000;
+    for (int i = 0; i < rplace_config->mod_roles_count; i++) {
+        struct view_canvas view_canvas = rplace_config->view_canvases[i];
+
+        if (strcmp(arg, view_canvas.name) == 0) {
+            canvas_url = view_canvas.http;
+            canvas_width = view_canvas.width;
+            canvas_height = view_canvas.height;
+            break;
+        }
     }
-    else if (strcmp(arg, "canvas2") == 0)
-    {
-        return;
-        canvas_url = "https://server.poemanthology.org/place";
-        canvas_width = 500;
-        canvas_height = 500;
-    }
-    else if (strcmp(arg, "turkeycanvas") == 0)
-    {
-        return;
-        canvas_url = "https://server.poemanthology.org/turkeyplace";
-        canvas_width = 250;
-        canvas_height = 250;
-    }
-    else
+
+    if (canvas_url == NULL)
     {
         struct discord_create_message params = {.content =
             "At the moment, custom canvases URLs are not supported.\n"
@@ -236,7 +391,8 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
 
     // No arguments is allowed as it will just do a 1:1 full canvas preview
     arg = strtok_r(NULL, " ", &count_state);
-    if (arg != NULL) {
+    if (arg != NULL)
+    {
         start_x = MAX(0, MIN(canvas_width - 1, atoi(arg)));
 
         arg = strtok_r(NULL, " ", &count_state);
@@ -271,7 +427,8 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         }
         height = MIN(canvas_height - 1 - start_y, atoi(arg));
 
-        if (width <= 0 || height <= 0) {
+        if (width <= 0 || height <= 0)
+        {
             struct discord_create_message params = { .content =
                 "Height or width can not be zero, use this command like:\n"
                 "r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`"};
@@ -292,13 +449,13 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
             }
 
             scale = MAX(1, MIN(10, atoi(arg)));
-            scaled_width = width*  scale;
-            scaled_height = height*  scale;
+            scaled_width = width * scale;
+            scaled_height = height * scale;
         }
     }
     // Reassure client that we have stared before we do any heavy lifting
     discord_create_reaction(client, event->channel_id, event->id,
-                            0, "✅", NULL);
+        0, "✅", NULL);
     // Lock before we fetch to ensure no overlapping curl actions
     pthread_mutex_lock(&fetch_lock);
 
@@ -314,15 +471,13 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
 
     curl_easy_setopt(curl, CURLOPT_HTTPGET, 1);
     curl_easy_setopt(curl, CURLOPT_URL, canvas_url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_fetch);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fetch_memory_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &chunk);
 
     result = curl_easy_perform(curl);
     if (result != CURLE_OK)
     {
-        printf("%s\n", curl_easy_strerror(result));
-        perror("Error fetching file");
-        printf("%d\n", result);
+        fprintf(stderr, "Error fetching file: %s\n", curl_easy_strerror(result));
 
         struct discord_create_message params = { .content =
             "Sorry, an unexpected network error ocurred and I can't fetch that canvas, "
@@ -411,7 +566,6 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     while (i < canvas_width * canvas_height)
     {
         // Copy over colour to image
-
         int x = i / canvas_width - start_y;       // image x (assuming image scale 1:1 with canvas)
         int y = 3 * (i % canvas_width - start_x); // image y (assuming image scale 1:1 with canvas + accounting for 3 byte colour)
 
@@ -506,19 +660,15 @@ void on_status(struct discord* client, const struct discord_message* event) {
         return;
     }
 
-    if (strcmp(canvas_name, "canvas1") == 0)
-    {
-        ws_url = "wss://server.rplace.live:443";
+    for (int i = 0; i < rplace_config->mod_roles_count; i++) {
+        struct view_canvas view_canvas = rplace_config->view_canvases[i];
+
+        if (strcmp(canvas_name, view_canvas.name) == 0) {
+            ws_url = view_canvas.socket;
+            break;
+        }
     }
-    else if (strcmp(canvas_name, "canvas2") == 0)
-    {
-        ws_url = "wss://server.poemanthology.org/ws";
-    }
-    else if (strcmp(canvas_name, "turkeycanvas") == 0)
-    {
-        ws_url = "wss://server.poemanthology.org/turkeyws";
-    }
-    else
+    if (ws_url == NULL)
     {
         // inbuilt_canvas = 0;
         struct discord_create_message params = {.content =
@@ -613,6 +763,8 @@ void parse_view_canvases(const char* key, JSON_Value* value, struct view_canvas*
     canvas->name = strdup(key);
     canvas->socket = strdup(json_object_get_string(obj, "socket"));
     canvas->http = strdup(json_object_get_string(obj, "http"));
+    canvas->width = json_object_get_number(obj, "width");
+    canvas->height = json_object_get_number(obj, "height");
 }
 
 void parse_mod_roles(const char* key, JSON_Value* value, u64snowflake** roles, int* count) {
@@ -622,11 +774,10 @@ void parse_mod_roles(const char* key, JSON_Value* value, u64snowflake** roles, i
 
     for (int i = 0; i < *count; i++) {
         JSON_Value* item = json_array_get_value(arr, i);
-        // This is absolute fucking bullshit that wasted a lot more of my debugging time than it should have.
-        // This shitty fucking library internally uses doubles when reading JSON numbers which results in the values
+        // This library internally uses doubles when reading JSONdebugging numbers which results in the values
         // being really miniscully truncated and rounded when casted into u64snowflakes. So now we have to read these
-        // numbers as a string and then parse it to u64snowflake after. Example if you could not imagine how brain-rottingly
-        // atrocious this is, 960971746842935297 was being read as 960971746842935296. Seriously? Thanks a lot, parson creators.
+        // numbers as a string and then parse it to u64snowflake after. Example, atrocious this is, 960971746842935297
+        // was being read as 960971746842935296. Seriously? Thanks a lot, parson creators.
         const char* num_char_slice = json_value_get_string(item);
         size_t num_str_len = json_value_get_string_len(item);
         char num_str[num_str_len + 1];
@@ -667,7 +818,7 @@ int main(int argc, char* argv[])
     FILE* rplace_config_file = fopen("rplace_bot.json", "rb");
     if (rplace_config_file == NULL)
     {
-        fprintf(stderr, "[CRITICAL] Could not read rplace config. FIle does not exist?.\n\n");
+        fprintf(stderr, "[CRITICAL] Could not read rplace config. FIle does not exist?.\n");
         return 1;
     }
 
@@ -679,7 +830,7 @@ int main(int argc, char* argv[])
     if (!rplace_config_text)
     {
         fclose(rplace_config_file);
-        fprintf(stderr, "[CRITICAL] Could not read rplace config. File was empty?.\n\n");
+        fprintf(stderr, "[CRITICAL] Could not read rplace bot config. File was empty?.\n");
         return 1;
     }
 
@@ -704,22 +855,61 @@ int main(int argc, char* argv[])
     // Compile the regular expression
     if (regcomp(&rplace_over_regex, rplace_over_pattern, REG_EXTENDED))
     {
-        fprintf(stderr, "[CRITICAL] Could not compile 'rplace over' regex. Bot can not run.\n\n");
+        fprintf(stderr, "[CRITICAL] Could not compile 'rplace over' regex. Bot can not run.\n");
         return 1;
     }
+    
+    db_err = sqlite3_open("rplace_bot.db", &bot_db);
+    if (db_err)
+    {
+        fprintf(stderr, "[CRITICAL] Could not open bot database: %s\n", sqlite3_errmsg(bot_db));
+        sqlite3_close(bot_db);
+        return 1;
+    }
+
+    db_err = sqlite3_exec(bot_db, "CREATE TABLE IF NOT EXISTS Censors ( \
+           member_id INTEGER, \
+           moderator_id INTEGER, \
+           censor_start INTEGER, \
+           censor_end INTEGER, \
+           reason TEXT \
+        )", NULL, NULL, &db_err_msg);
+    if (db_err != SQLITE_OK)
+    {
+        fprintf(stderr, "SQL error: Could not create Censors table: %s\n", db_err_msg);
+        sqlite3_free(db_err_msg);
+    }
+
+    sqlite3_exec(bot_db, "CREATE TABLE IF NOT EXISTS Purges ( \
+            member_id INTEGER, \
+            moderator_id INTEGER, \
+            message_count INTEGER, \
+            purge_date INTEGER \
+        )", NULL, NULL, &db_err_msg);
+    if (db_err != SQLITE_OK)
+    {
+        fprintf(stderr, "SQL error: Could not create Purges table: %s\n", db_err_msg);
+        sqlite3_free(db_err_msg);
+    }
+
+    _discord_client = client;
+    signal(SIGINT, handle_sigint);
 
     discord_set_on_ready(client, &on_ready);
     discord_set_on_command(client, "view", &on_canvas_mention);
     discord_set_on_command(client, "help", &on_help);
     discord_set_on_command(client, "status", &on_status);
     discord_set_on_command(client, "modhelp", &mod_help);
+    discord_set_on_command(client, "1984", &on_1984);
+    discord_set_on_command(client, "purge", &on_purge);
     discord_set_on_command(client, "", &on_help);
     discord_set_on_commands(client, (char* []){"help", "?", ""}, 3, &on_help);
     discord_set_on_message_create(client, &on_message);
     discord_run(client);
-
+    
     discord_cleanup(client);
     ccord_global_cleanup();
     pthread_mutex_destroy(&fetch_lock);
     regfree(&rplace_over_regex);
+    sqlite3_close(bot_db);
 }
