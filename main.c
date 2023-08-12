@@ -50,6 +50,13 @@ struct view_canvas {
 
 struct config* rplace_config;
 
+struct discord_client_message_info {
+    struct discord* client;
+    u64snowflake message_id;
+    u64snowflake channel_id;
+    u64snowflake author_id;
+};
+
 uint8_t default_palette[32][3] = {
     {109, 0, 26},
     {190, 0, 57},
@@ -739,6 +746,47 @@ void on_status(struct discord* client, const struct discord_message* event) {
     pthread_mutex_unlock(&fetch_lock);
 }
 
+static int censor_callback(void* info_void, int column_count, char** data, char** columns)
+{
+    struct discord_client_message_info* info = (struct discord_client_message_info*) info_void; 
+    time_t censor_end_date = INT64_MAX;
+    time_t current_date = time(NULL);
+    char* reason = NULL;
+
+    for (int i = 0; i < column_count; i++)
+    {
+        const char* str_name = columns[i];
+        const char* str_value = data[i];
+
+        if (strcmp(str_name, "censor_end") == 0)
+        {
+            censor_end_date = strtoull(str_value, NULL, 10);
+        }
+        else if (strcmp(str_name, "reason") == 0)
+        {
+            reason = strdup(str_value);
+        }
+    }
+
+    if (current_date > censor_end_date)
+    {
+        char* query_1984 = sqlite3_mprintf("DELETE FROM Censors WHERE member_id='%llu'", info->author_id);
+        db_err = sqlite3_exec(bot_db, query_1984, NULL, NULL, &db_err_msg);
+        if (db_err != SQLITE_OK)
+        {
+            fprintf(stderr, "SQL error: Could not remove censor for client: %s\n", db_err_msg);
+            sqlite3_free(db_err_msg);
+        }
+
+        return 0;
+    }
+
+    struct discord_delete_message delete_info = { .reason = reason };
+    discord_delete_message(info->client, info->channel_id, info->message_id, &delete_info, NULL);
+    free(info);
+    free(reason);
+}
+
 regex_t rplace_over_regex;
 
 void on_message(struct discord* client, const struct discord_message* event)
@@ -756,6 +804,22 @@ void on_message(struct discord* client, const struct discord_message* event)
         regerror(reti, &rplace_over_regex, error_buffer, sizeof(error_buffer));
         fprintf(stderr, "Regex match failed: %s\n", error_buffer);
     }
+
+    struct discord_client_message_info* info = malloc(sizeof(struct discord_client_message_info));
+    info->client = client;
+    info->message_id = event->id;
+    info->channel_id = event->channel_id;
+    info->author_id = event->author->id;
+
+    char* query_1984 = sqlite3_mprintf("SELECT * FROM Censors WHERE member_id='%llu'", event->author->id);
+    db_err = sqlite3_exec(bot_db, query_1984, censor_callback, info, &db_err_msg);
+    if (db_err != SQLITE_OK)
+    {
+        fprintf(stderr, "SQL error: Could not check message against censors: %s\n", db_err_msg);
+        sqlite3_free(db_err_msg);
+    }
+
+    sqlite3_free(query_1984);
 }
 
 void parse_view_canvases(const char* key, JSON_Value* value, struct view_canvas* canvas) {
@@ -846,7 +910,7 @@ int main(int argc, char* argv[])
 
     if (pthread_mutex_init(&fetch_lock, NULL) != 0)
     {
-        printf("[CRITICAL] Failed to init fetch lock mutex. Bot can not run.\n");
+        fprintf(stderr, "[CRITICAL] Failed to init fetch lock mutex. Bot can not run.\n");
         return 1;
     }
 
