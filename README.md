@@ -26,3 +26,26 @@ Create a config.json that looks like the following
     }
 }
 ```
+
+Create rplace_bot.json for bot-specific functionality like the following
+```json
+{
+    "mod_roles": [ "961684196387070022", "977717911764488242", "960971746842935297" ],
+    "view_canvases": {
+        "canvas1": {
+            "socket": "wss://server.rplace.live:443",
+            "http": "https://raw.githubusercontent.com/rplacetk/canvas1/main/place"
+        },
+        "canvas2": {
+            "socket": "wss://server.poemanthology.org/ws",
+            "http": "https://server.poemanthology.org/place"
+        },
+        "turkeycanvas": {
+            "socket": "wss://server.poemanthology.org/turkeyws",
+            "http": "https://server.poemanthology.org/turkeyplace"
+        }
+    }
+}
+```
+Note:
+ - mod_roles must be an array of strings due to parsing library limitations.
