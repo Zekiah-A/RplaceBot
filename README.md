@@ -60,11 +60,14 @@ does not implement a cmakelists.txt to be compiled alongside this project as a g
  - You will also have to self compile CURL with websocket support if you receive 'curl_easy_perform() failed: Unsupported protocol'
 error messages. To check if your cURL has support, run curl --version and check for ws/wss protocols present.
 
- - This project can be compiled easily with `gcc main.c lib/parson.c lib/parson.h -o RplaceBot -pthread -ldiscord -lcurl -lpng -lsqlite3` and ran with ./RplaceBot.
+ - This project can be compiled easily with `gcc main.c lib/parson.c lib/parson.h -o RplaceBot -pthread -ldiscord -lcurl -lpng -lsqlite3 -Wall -Wextra -Wno-unused-parameter` and ran with ./RplaceBot.
 
 ## Notes:
- - mod_roles in rplace_bot.json must be an array of strings due to parsing library limitations.
+ - The parameter mod_roles in rplace_bot.json must be an array of strings due to parsing library limitations.
  - Bot data is stored in a SQLITE DB file called `rplace_bot.db`.
  - A helper script `edit-db.py` is provided to help with quickly editing the database.
 It requires pip package `sqlite3` and `prompt_toolkit` the latter can be installed with
 `python3 -m pip install prompt_toolkit`.
+ - The command `sqlite3` can also be used to edit the bot database if you have it installed. It is reccomended you
+use`.open rplace_bot.db` with `.mode box --wrap 50` for the best experience when viewing the database. More help
+can be found at https://sqlite.org/cli.html.

@@ -3,7 +3,7 @@
 // does not implement a cmakelists.txt to be compiled alongside this project as a gitmodule
 // You will also have to self compile CURL with websocket support if you receive 'curl_easy_perform() failed: Unsupported protocol'
 // error messages. To check if your cURL has support, run curl --version and check for ws/wss protocols present.
-// This project can be compiled easily with gcc main.c lib/parson.c lib/parson.h -o RplaceBot -pthread -ldiscord -lcurl -lpng -lsqlite3
+// This project can be compiled easily with gcc main.c lib/parson.c lib/parson.h -o RplaceBot -pthread -ldiscord -lcurl -lpng -lsqlite3 -Wall -Wextra -Wno-unused-parameter
 #include <stdio.h>
 #include <stdlib.h>
 #include <concord/discord.h>
@@ -135,7 +135,6 @@ int check_member_has_mod(struct discord* client, u64snowflake guild_id, u64snowf
         return 0;
     }
 
-    int has_mod = 0;
     for (int i = 0; i < guild_member.roles->size; i++)
     {
         for (int j = 0; j < rplace_config->mod_roles_count; j++)
@@ -150,7 +149,7 @@ int check_member_has_mod(struct discord* client, u64snowflake guild_id, u64snowf
     return 0;
 }
 
-void mod_help(struct discord* client, const struct discord_message* event)
+void on_mod_help(struct discord* client, const struct discord_message* event)
 {
     struct discord_embed embed = {
         .title = "Moderator commands",
@@ -165,7 +164,8 @@ void mod_help(struct discord* client, const struct discord_message* event)
     if (check_member_has_mod(client, event->guild_id, event->author->id))
     {
         embed.description = "**r/1984** `member` `period(s|m|h|d)` `reason`\nHide all the messages a user sends for a given period of time\n\n"
-            "**r/purge** `message count*` `member id (optional)`\nClear 'n' message history of a user, or of a channel (if no member_id, max: 100 messages per 2 hours)\n\n";
+            "**r/purge** `message count*` `member id (optional)`\nClear 'n' message history of a user, or of a channel (if no member_id, max: 100 messages per 2 hours)\n\n"
+            "**r/modhistory**\nDisplay a history of all actively and past used moderation commands\n\n";
     }
     else
     {
@@ -205,7 +205,7 @@ void on_1984(struct discord* client, const struct discord_message* event)
     char* arg = strtok_r(event->content, " ", &count_state);
     if (arg == NULL)
     {
-        mod_help(client, event);
+        on_mod_help(client, event);
         return;
     }
 
@@ -222,7 +222,7 @@ void on_1984(struct discord* client, const struct discord_message* event)
     arg = strtok_r(NULL, " ", &count_state);
     if (arg == NULL)
     {
-        mod_help(client, event);
+        on_mod_help(client, event);
         return;
     }
 
@@ -253,6 +253,14 @@ void on_1984(struct discord* client, const struct discord_message* event)
     if (period_s > 31540000) // 365 days
     {
         embed.description = "Sorry. That 1984 is too massive! (Maximum 365 days).";
+        struct discord_create_message params = {
+            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+    else if (period_s <= 0)
+    {
+        embed.description = "You can't 1984 for that period of time? (Minimum 1 second).";
         struct discord_create_message params = {
             .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
         discord_create_message(client, event->channel_id, &params, NULL);
@@ -290,11 +298,10 @@ void on_1984(struct discord* client, const struct discord_message* event)
         sqlite3_finalize(cmp_statement);
     }
 
-    const char* raw_str_1984 = "Successfully 1984ed user **%ld** for **%d %s** (reason: **%s**).";
+    const char* raw_str_1984 = "Successfully 1984ed user **%llu** for **%d %s** (reason: **%s**).";
     size_t str_1984_len = snprintf(NULL, 0, raw_str_1984, member_id, period_original, period_unit, reason) + 1;
     char* str_1984 = malloc(str_1984_len);
     snprintf(str_1984, str_1984_len, raw_str_1984, member_id, period_original, period_unit, reason);
-    str_1984[str_1984_len - 1] = '\0';
     embed.description = str_1984;
 
     struct discord_create_message params = {
@@ -307,7 +314,120 @@ void on_1984(struct discord* client, const struct discord_message* event)
 
 void on_purge(struct discord* client, const struct discord_message* event)
 {
+    struct discord_embed embed = {
+        .title = "Moderation action - Purge user",
+        .color = 0xFF4500,
+        .footer = &(struct discord_embed_footer) {
+            .text = "https://rplace.live, bot by Zekiah-A",
+            .icon_url = "https://github.com/rslashplace2/rslashplace2.github.io/raw/main/favicon.png"}};
 
+
+    if (!check_member_has_mod(client, event->guild_id, event->author->id))
+    {
+        embed.description = "Sorry. You need moderator or higher permissions to be able to use this command!";
+        embed.image = &(struct discord_embed_image) {
+            .url = "https://media.tenor.com/qmSIzc-H7vIAAAAC/1984.gif" };
+
+        struct discord_create_message params = {
+            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+}
+
+void on_mod_history(struct discord* client, const struct discord_message* event)
+{
+    struct discord_embed embed = {
+    .title = "Moderation action - View history",
+    .color = 0xFF4500,
+    .footer = &(struct discord_embed_footer) {
+        .text = "https://rplace.live, bot by Zekiah-A",
+        .icon_url = "https://github.com/rslashplace2/rslashplace2.github.io/raw/main/favicon.png"}};
+
+    if (!check_member_has_mod(client, event->guild_id, event->author->id))
+    {
+        embed.description = "Sorry. You need moderator or higher permissions to be able to use this command!";
+        embed.image = &(struct discord_embed_image) {
+            .url = "https://media.tenor.com/qmSIzc-H7vIAAAAC/1984.gif" };
+
+        struct discord_create_message params = {
+            .embeds = &(struct discord_embeds) { .size = 1, .array = &embed }};
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+
+    const char* tables_censors_title = "**__Censors history:__**\n"; 
+    const char* tables_purges_title = "**__Purges history:__\n**";
+
+    int tables_len = strlen(tables_censors_title) + strlen(tables_purges_title) + 1;
+    int tables_used = tables_len;
+    char* tables = malloc(tables_len);
+    strcpy(tables, tables_censors_title);
+
+    const char* query_get_censors = "SELECT * FROM Censors;";
+    sqlite3_stmt* censors_cmp_statement;
+    db_err = sqlite3_prepare_v2(bot_db, query_get_censors, -1, &censors_cmp_statement, NULL);
+
+    if (db_err != SQLITE_OK) {
+        fprintf(stderr, "Cannot prepare get censors: %s\n", sqlite3_errmsg(bot_db));
+        return;
+    }
+
+    while (sqlite3_step(censors_cmp_statement) == SQLITE_ROW)
+    {
+        const uint64_t start_date_i = sqlite3_column_int64(censors_cmp_statement, 2); // pretty format
+        const uint64_t member_id = sqlite3_column_int64(censors_cmp_statement, 0); // resolve to name
+        const uint64_t moderator_id = sqlite3_column_int64(censors_cmp_statement, 1); // resolve to name
+        const uint64_t end_date_i = sqlite3_column_int64(censors_cmp_statement, 3); // resolve to name
+        const char* reason = sqlite3_column_text(censors_cmp_statement, 4); // resolve to name
+
+        char start_date[32];
+        struct tm* start_date_t = localtime(&start_date_i);
+        size_t sd_s = strftime(start_date, sizeof(start_date), "%d/%m/%Y %H:%M", start_date_t);
+        start_date[sd_s] = '\0';
+        
+        char end_date[32];
+        struct tm* end_date_t = localtime(&end_date_i);
+        size_t ed_s = strftime(end_date, sizeof(end_date), "%d/%m/%Y %H:%M", end_date_t);
+        end_date[ed_s] = '\0';
+        
+        size_t new_table_len = snprintf(NULL, 0, "**Start date:** %s\n \
+            **Member:** %s\n \
+            **Moderator:** %s\n \
+            **End date:** %s\n \
+            **Reason:** %s\n \
+            \n\n", start_date, "MEMBER", "MODERATOR", end_date, reason);
+        char* new_table = malloc(new_table_len + 1);
+        snprintf(new_table, new_table_len, "**Start date:** %s\n \
+            **Member:** %s\n \
+            **Moderator:** %s\n \
+            **End date:** %s\n \
+            **Reason:** %s\n \
+            \n\n", start_date, "MEMBER", "MODERATOR", end_date, reason);
+
+        tables_used += new_table_len;
+        if (tables_used > tables_len)
+        {
+            int realloc_size = tables_len;
+            while (realloc_size < tables_used)
+            {
+                realloc_size *= 2;
+            }
+
+            tables = realloc(tables, realloc_size);
+            tables_len = realloc_size;
+        }
+
+        strcat(tables, new_table);
+    }
+
+    sqlite3_finalize(censors_cmp_statement);
+    strcat(tables, tables_purges_title);
+
+    embed.description = tables;
+    struct discord_create_message params = {
+        .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+    discord_create_message(client, event->channel_id, &params, NULL);
 }
 
 void on_help(struct discord* client, const struct discord_message* event)
@@ -315,9 +435,9 @@ void on_help(struct discord* client, const struct discord_message* event)
     struct discord_embed embed = {
         .title = "Commands",
         .description =
-            "**r/view** `canvas1/canvas2/turkeycanvas/...` `x` `y` `width` `height` `z` \n*Create an image from a region of the canvas*\n\n"
+            "**r/view** `canvas1/...` `x` `y` `width` `height` `z` \n*Create an image from a region of the canvas*\n\n"
             "**r/help**, **r/?**, **r/** \n*Displays information about this bot*\n\n"
-            "**r/status** `canvas1/canvas2/turkeycanvas/...` \n*Displays if the provided canvas is online or not*\n\n"
+            "**r/status** `canvas1/...` \n*Displays if the provided canvas is online or not*\n\n"
             "**r/modhelp** \n*Displays help information for moderator actions*\n\n",
         .color = 0xFF4500,
         .footer = &(struct discord_embed_footer){
@@ -494,9 +614,9 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     }
 
     // Then this is a new format (RLE encoded) board that must be decoded
-    if (chunk.size < canvas_width*  canvas_height)
+    if (chunk.size < canvas_width * canvas_height)
     {
-        int decoded_size = canvas_width*  canvas_height;
+        int decoded_size = canvas_width * canvas_height;
         uint8_t* decoded_board = malloc(decoded_size);
         int boardI = 0;
         int colour = 0;
@@ -785,6 +905,8 @@ static int censor_callback(void* info_void, int column_count, char** data, char*
     discord_delete_message(info->client, info->channel_id, info->message_id, &delete_info, NULL);
     free(info);
     free(reason);
+
+    return 0;
 }
 
 regex_t rplace_over_regex;
@@ -932,11 +1054,11 @@ int main(int argc, char* argv[])
     }
 
     db_err = sqlite3_exec(bot_db, "CREATE TABLE IF NOT EXISTS Censors ( \
-           member_id INTEGER, \
-           moderator_id INTEGER, \
-           censor_start INTEGER, \
-           censor_end INTEGER, \
-           reason TEXT \
+            member_id INTEGER PRIMARY KEY UNIQUE, \
+            moderator_id INTEGER, \
+            censor_start INTEGER, \
+            censor_end INTEGER, \
+            reason TEXT \
         )", NULL, NULL, &db_err_msg);
     if (db_err != SQLITE_OK)
     {
@@ -963,11 +1085,12 @@ int main(int argc, char* argv[])
     discord_set_on_command(client, "view", &on_canvas_mention);
     discord_set_on_command(client, "help", &on_help);
     discord_set_on_command(client, "status", &on_status);
-    discord_set_on_command(client, "modhelp", &mod_help);
+    discord_set_on_command(client, "modhelp", &on_mod_help);
+    discord_set_on_command(client, "modhistory", &on_mod_history);
     discord_set_on_command(client, "1984", &on_1984);
     discord_set_on_command(client, "purge", &on_purge);
     discord_set_on_command(client, "", &on_help);
-    discord_set_on_commands(client, (char* []){"help", "?", ""}, 3, &on_help);
+    discord_set_on_commands(client, (char* []){ "help", "?", "" }, 3, &on_help);
     discord_set_on_message_create(client, &on_message);
     discord_run(client);
     
