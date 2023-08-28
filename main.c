@@ -149,6 +149,46 @@ int check_member_has_mod(struct discord* client, u64snowflake guild_id, u64snowf
     return 0;
 }
 
+// Returns 0 if invalid member
+u64snowflake resolve_member_mention(struct discord* client, const char* mention_string)
+{
+    int str_id_len = strlen(mention_string);
+    char* str_id = NULL;
+
+    // There should never be a member id this small in theory, but whatever
+    if (str_id_len > 3 && mention_string[0] == '<' && mention_string[1] == '@')
+    {
+        int member_id_len = str_id_len - 3;
+        str_id = malloc(member_id_len);
+        memcpy(str_id, mention_string + 2, member_id_len);
+    }
+    else if (str_id_len > 0)
+    {
+        str_id = strdup(mention_string);
+    }
+    else
+    {
+        return (u64snowflake) 0;
+    }
+
+    u64snowflake member_id = strtoull(str_id, NULL, 10);
+    free(str_id);
+
+    if (member_id == 0)
+    {
+        return (u64snowflake) 0;
+    }
+
+    struct discord_user user = { };
+    struct discord_ret_user ret_user = { .sync = &user };
+    if (discord_get_user(client, member_id, &ret_user) != CCORD_OK)
+    {
+        return (u64snowflake) 0;
+    }
+
+    return member_id;
+}
+
 void on_mod_help(struct discord* client, const struct discord_message* event)
 {
     struct discord_embed embed = {
@@ -164,7 +204,7 @@ void on_mod_help(struct discord* client, const struct discord_message* event)
     if (check_member_has_mod(client, event->guild_id, event->author->id))
     {
         embed.description = "**r/1984** `member` `period(s|m|h|d)` `reason`\nHide all the messages a user sends for a given period of time\n\n"
-            "**r/purge** `message count*` `member id (optional)`\nClear 'n' message history of a user, or of a channel (if no member_id, max: 100 messages per 2 hours)\n\n"
+            "**r/purge** `message count*` `member (optional)`\nClear 'n' message history of a user, or of a channel (if no member_id, max: 100 messages per 2 hours)\n\n"
             "**r/modhistory**\nDisplay a history of all actively and past used moderation commands\n\n";
     }
     else
@@ -209,7 +249,15 @@ void on_1984(struct discord* client, const struct discord_message* event)
         return;
     }
 
-    u64snowflake member_id = strtoull(arg, NULL, 10);
+    u64snowflake member_id = resolve_member_mention(client, arg);
+    if (member_id == 0)
+    {
+        embed.description = "Sorry. Can't find the user that you are trying to 1984. ¯\\_(ツ)_/¯";
+        struct discord_create_message params = {
+            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
     if (check_member_has_mod(client, event->guild_id, member_id))
     {
         embed.description = "Sorry. You can not 1984 another moderator!";
@@ -332,6 +380,22 @@ void on_purge(struct discord* client, const struct discord_message* event)
             .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
+    }
+
+    char* count_state = NULL;
+    char* arg = strtok_r(event->content, " ", &count_state);
+    if (arg == NULL)
+    {
+        on_mod_help(client, event);
+        return;
+    }
+
+    char* arg = strtok_r(NULL, " ", &count_state);
+    u64snowflake member_id = (u64snowflake) 0;
+
+    if (arg != NULL)
+    {
+        member_id = resolve_member_mention(client, arg);
     }
 }
 
