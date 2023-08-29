@@ -36,6 +36,8 @@ struct config {
     struct view_canvas* view_canvases;
     int view_canvases_count;
 
+    int max_hourly_mod_purge;
+
     u64snowflake* mod_roles;
     int mod_roles_count;
 };
@@ -149,8 +151,8 @@ int check_member_has_mod(struct discord* client, u64snowflake guild_id, u64snowf
     return 0;
 }
 
-// Returns 0 if invalid member
-u64snowflake resolve_member_mention(struct discord* client, const char* mention_string)
+// Returns NULL if invalid user
+struct discord_user* resolve_user_mention(struct discord* client, const char* mention_string)
 {
     int str_id_len = strlen(mention_string);
     char* str_id = NULL;
@@ -159,8 +161,9 @@ u64snowflake resolve_member_mention(struct discord* client, const char* mention_
     if (str_id_len > 3 && mention_string[0] == '<' && mention_string[1] == '@')
     {
         int member_id_len = str_id_len - 3;
-        str_id = malloc(member_id_len);
+        str_id = malloc(member_id_len + 1);
         memcpy(str_id, mention_string + 2, member_id_len);
+        str_id[member_id_len] = '\0';
     }
     else if (str_id_len > 0)
     {
@@ -168,7 +171,7 @@ u64snowflake resolve_member_mention(struct discord* client, const char* mention_
     }
     else
     {
-        return (u64snowflake) 0;
+        return NULL;
     }
 
     u64snowflake member_id = strtoull(str_id, NULL, 10);
@@ -176,17 +179,17 @@ u64snowflake resolve_member_mention(struct discord* client, const char* mention_
 
     if (member_id == 0)
     {
-        return (u64snowflake) 0;
+        return NULL;
     }
 
-    struct discord_user user = { };
+    struct discord_user* user = malloc(sizeof(struct discord_user));
     struct discord_ret_user ret_user = { .sync = &user };
     if (discord_get_user(client, member_id, &ret_user) != CCORD_OK)
     {
-        return (u64snowflake) 0;
+        return NULL;
     }
 
-    return member_id;
+    return user;
 }
 
 void on_mod_help(struct discord* client, const struct discord_message* event)
@@ -249,8 +252,8 @@ void on_1984(struct discord* client, const struct discord_message* event)
         return;
     }
 
-    u64snowflake member_id = resolve_member_mention(client, arg);
-    if (member_id == 0)
+    struct discord_user* member = resolve_user_mention(client, arg);
+    if (member == NULL)
     {
         embed.description = "Sorry. Can't find the user that you are trying to 1984. ¯\\_(ツ)_/¯";
         struct discord_create_message params = {
@@ -258,8 +261,10 @@ void on_1984(struct discord* client, const struct discord_message* event)
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
-    if (check_member_has_mod(client, event->guild_id, member_id))
+        
+    if (check_member_has_mod(client, event->guild_id, member->id))
     {
+        free(member);
         embed.description = "Sorry. You can not 1984 another moderator!";
         struct discord_create_message params = {
             .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
@@ -270,6 +275,7 @@ void on_1984(struct discord* client, const struct discord_message* event)
     arg = strtok_r(NULL, " ", &count_state);
     if (arg == NULL)
     {
+        free(member);
         on_mod_help(client, event);
         return;
     }
@@ -300,6 +306,7 @@ void on_1984(struct discord* client, const struct discord_message* event)
     int period_s = period_original * period_multiplier;
     if (period_s > 31540000) // 365 days
     {
+        free(member);
         embed.description = "Sorry. That 1984 is too massive! (Maximum 365 days).";
         struct discord_create_message params = {
             .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
@@ -308,6 +315,7 @@ void on_1984(struct discord* client, const struct discord_message* event)
     }
     else if (period_s <= 0)
     {
+        free(member);
         embed.description = "You can't 1984 for that period of time? (Minimum 1 second).";
         struct discord_create_message params = {
             .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
@@ -323,12 +331,12 @@ void on_1984(struct discord* client, const struct discord_message* event)
     reason = strdup(count_state);
 
     const char* query_1984 = "INSERT INTO Censors (member_id, moderator_id, censor_start, censor_end, reason) VALUES (?, ?, ?, ?, ?)";
-    sqlite3_stmt *cmp_statement; // Compiled query statement
-    time_t current_time = time(NULL); // Unix timestamp since epoch
+    sqlite3_stmt* cmp_statement; // Compiled query statement
+    time_t current_time = time(NULL); // Unix timestamp since epoch (s)
 
     if (sqlite3_prepare_v2(bot_db, query_1984, -1, &cmp_statement, 0) == SQLITE_OK)
     {
-        sqlite3_bind_int64(cmp_statement, 1, member_id);
+        sqlite3_bind_int64(cmp_statement, 1, member->id);
         sqlite3_bind_int64(cmp_statement, 2, event->author->id);
         sqlite3_bind_int64(cmp_statement, 3, current_time);
         sqlite3_bind_int64(cmp_statement, 4, current_time + period_s);
@@ -336,6 +344,7 @@ void on_1984(struct discord* client, const struct discord_message* event)
 
         if (sqlite3_step(cmp_statement) != SQLITE_DONE)
         {
+            free(member);
             embed.description = "Failed to 1984 user. Internal bot error occured :skull:";
             struct discord_create_message params = {
                 .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
@@ -346,10 +355,10 @@ void on_1984(struct discord* client, const struct discord_message* event)
         sqlite3_finalize(cmp_statement);
     }
 
-    const char* raw_str_1984 = "Successfully 1984ed user **%llu** for **%d %s** (reason: **%s**).";
-    size_t str_1984_len = snprintf(NULL, 0, raw_str_1984, member_id, period_original, period_unit, reason) + 1;
+    const char* raw_str_1984 = "Successfully 1984ed user **%s** for **%d %s** (reason: **%s**).";
+    size_t str_1984_len = snprintf(NULL, 0, raw_str_1984, member->username, period_original, period_unit, reason) + 1;
     char* str_1984 = malloc(str_1984_len);
-    snprintf(str_1984, str_1984_len, raw_str_1984, member_id, period_original, period_unit, reason);
+    snprintf(str_1984, str_1984_len, raw_str_1984, member->id, period_original, period_unit, reason);
     embed.description = str_1984;
 
     struct discord_create_message params = {
@@ -390,13 +399,187 @@ void on_purge(struct discord* client, const struct discord_message* event)
         return;
     }
 
-    char* arg = strtok_r(NULL, " ", &count_state);
-    u64snowflake member_id = (u64snowflake) 0;
+    int count = atoi(arg);
+    if (count < 1)
+    {
+        embed.description = "Sorry. You can't purge less than one message!";
+        struct discord_create_message params = {
+            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+
+    arg = strtok_r(NULL, " ", &count_state);
+    struct discord_user* member;
 
     if (arg != NULL)
     {
-        member_id = resolve_member_mention(client, arg);
+        member = resolve_user_mention(client, arg);
+        if (member == NULL)
+        {
+            embed.description = "Sorry. Can't find the user that you are trying to purge. (-_- )";
+            struct discord_create_message params = {
+                .embeds = &(struct discord_embeds){ .size = 1, .array = &embed }};
+            discord_create_message(client, event->channel_id, &params, NULL);
+            return;
+        }
     }
+
+    // Block mods from abusing to purge insane message counts
+    int moderator_hourly_purge = 0;
+    const char* query_get_purges = "SELECT message_count FROM Purges WHERE moderator_id = ? AND purge_date > ?";
+    sqlite3_stmt* get_cmp_statement;
+    db_err = sqlite3_prepare_v2(bot_db, query_get_purges, -1, &get_cmp_statement, NULL);
+
+    if (db_err != SQLITE_OK)
+    {
+        free(member);
+        fprintf(stderr, "Cannot prepare get rate limit purges: %s\n", sqlite3_errmsg(bot_db));
+        return;
+    }
+
+    time_t current_time = time(NULL); // time since unix epoch (s)
+
+    sqlite3_bind_int64(get_cmp_statement, 0, event->author->id);
+    sqlite3_bind_int64(get_cmp_statement, 1, current_time - 3600);
+
+    while (sqlite3_step(get_cmp_statement) == SQLITE_ROW)
+    {
+        int message_count = sqlite3_column_int(get_cmp_statement, 0);
+        if ((moderator_hourly_purge += message_count) > rplace_config->max_hourly_mod_purge)
+        {
+            free(member);
+            const char* raw_str_purge_cooldown = "Calm down! You can't purge more than %i messages within an hour.";
+            size_t str_purge_cooldown_len = snprintf(NULL, 0, raw_str_purge_cooldown, rplace_config->max_hourly_mod_purge) + 1;
+            char* str_purge_cooldown = malloc(str_purge_cooldown_len);
+            snprintf(str_purge_cooldown, str_purge_cooldown_len, raw_str_purge_cooldown, rplace_config->max_hourly_mod_purge);
+            
+            embed.description = str_purge_cooldown;
+            struct discord_create_message params = {
+                .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+            discord_create_message(client, event->channel_id, &params, NULL);
+            return;
+        }
+    }
+   
+    if (sqlite3_step(get_cmp_statement) != SQLITE_DONE)
+    {
+        free(member);
+        fprintf(stderr, "Could not get purges history: %s\n", sqlite3_errmsg(bot_db));
+
+        embed.description = "Failed to purge user messages. Internal bot error occured :skull:";
+        struct discord_create_message params = {
+            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+
+    sqlite3_finalize(get_cmp_statement);
+
+    // Purge messages
+    const char* raw_delete_reason = "Part of %i message purge issued by %s.";
+    size_t delete_reason_len = snprintf(NULL, 0, raw_delete_reason, count, event->author->username) + 1;
+    char* delete_reason = malloc(delete_reason_len);
+    snprintf(delete_reason, delete_reason_len, raw_delete_reason, count, event->author->username);
+
+    // Channel purge
+    if (member == NULL)
+    {
+        int message_i = 0;
+        struct discord_get_channel_messages params = { .limit = count };
+        while (message_i < params.limit)
+        {
+            struct discord_messages messages = { };
+            struct discord_ret_messages ret_messages = { .sync = &messages };
+            if (discord_get_channel_messages(client, event->channel_id, &params, &ret_messages) != CCORD_OK)
+            {
+                fprintf(stderr, "Could not get purge guild channel messages: %s\n", sqlite3_errmsg(bot_db));
+                continue;
+            }
+
+            for (message_i = 0; message_i < messages.size; message_i++)
+            {
+                if (member == NULL || (member->id == messages.array[message_i].author->id) && *messages.array[message_i].content)
+                {
+                    struct discord_delete_message delete_info = { .reason = delete_reason };
+                    discord_delete_message(client, event->channel_id, messages.array[message_i].id, &delete_info, NULL);
+                }
+            }
+
+            if (message_i)
+            {
+                params.before = messages.array[message_i - 1].id;
+            }
+
+            discord_messages_cleanup(&messages);
+        }
+    }
+    else // Member msg purge
+    {
+        struct discord_channels channels = { };
+        struct discord_ret_channels ret_channels = { .sync = &channels };
+        if (discord_get_guild_channels(client, event->guild_id, &ret_channels) != CCORD_OK)
+        {
+            free(member);
+            fprintf(stderr, "Could not get purge guild channels: %s\n", sqlite3_errmsg(bot_db));
+
+            embed.description = "Failed to purge messages. Internal bot error occured :skull:";
+            struct discord_create_message params = {
+                .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+            discord_create_message(client, event->channel_id, &params, NULL);
+            return;
+        }
+
+        struct discord_get_channel_messages params = { .limit = count };
+        for (int channel_i = 0; channel_i < channels.size; channel_i++)
+        {
+            // Initially get most recent messages
+            params.before = 0;
+    
+            int message_i = 0;
+            while (message_i < params.limit)
+            {
+                struct discord_messages messages = { };
+                struct discord_ret_messages ret_messages = { .sync = &messages };
+                if (discord_get_channel_messages(client, channels.array[channel_i].id, &params, &ret_messages) != CCORD_OK)
+                {
+                    fprintf(stderr, "Could not get purge guild channel messages: %s\n", sqlite3_errmsg(bot_db));
+                    continue;
+                }
+
+                for (message_i = 0; message_i < messages.size; message_i++)
+                {
+                    struct discord_delete_message delete_info = { .reason = delete_reason };
+                    discord_delete_message(client, channels.array[channel_i].id, messages.array[message_i].id, &delete_info, NULL);
+                }
+
+                if (message_i)
+                {
+                    params.before = messages.array[message_i - 1].id;
+                }
+
+                discord_messages_cleanup(&messages);
+            }
+        }
+    
+        discord_channels_cleanup(&channels);
+    }
+
+    // Update database history with latest purge
+    const char* query_inset_purge = "INSERT INTO Purges VALUES(?, ?, ?, ?)";
+    sqlite3_stmt* insert_cmp_statement;
+
+    if (sqlite3_prepare_v2(bot_db, query_inset_purge, -1, &insert_cmp_statement, NULL) != SQLITE_OK)
+    {
+        free(member);
+        fprintf(stderr, "Cannot could not prepare insert purge: %s\n", sqlite3_errmsg(bot_db));
+        return;
+    }
+
+    sqlite3_bind_int64(insert_cmp_statement, 0, member->id);
+    sqlite3_bind_int64(insert_cmp_statement, 1, event->author->id);
+    sqlite3_bind_int(insert_cmp_statement, 2, count);
+    sqlite3_bind_int64(insert_cmp_statement, 3, current_time);
 }
 
 void on_mod_history(struct discord* client, const struct discord_message* event)
@@ -439,11 +622,11 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
 
     while (sqlite3_step(censors_cmp_statement) == SQLITE_ROW)
     {
-        const uint64_t start_date_i = sqlite3_column_int64(censors_cmp_statement, 2); // pretty format
-        const uint64_t member_id = sqlite3_column_int64(censors_cmp_statement, 0); // resolve to name
-        const uint64_t moderator_id = sqlite3_column_int64(censors_cmp_statement, 1); // resolve to name
-        const uint64_t end_date_i = sqlite3_column_int64(censors_cmp_statement, 3); // resolve to name
-        const char* reason = sqlite3_column_text(censors_cmp_statement, 4); // resolve to name
+        const uint64_t start_date_i = sqlite3_column_int64(censors_cmp_statement, 2);
+        const uint64_t member_id = sqlite3_column_int64(censors_cmp_statement, 0);
+        const uint64_t moderator_id = sqlite3_column_int64(censors_cmp_statement, 1);
+        const uint64_t end_date_i = sqlite3_column_int64(censors_cmp_statement, 3);
+        const char* reason = sqlite3_column_text(censors_cmp_statement, 4);
 
         char start_date[32];
         struct tm* start_date_t = localtime(&start_date_i);
@@ -1041,10 +1224,12 @@ void process_config_json(const char* json_string, struct config* config) {
     JSON_Value* root = json_parse_string(json_string);
     JSON_Object* root_obj = json_value_get_object(root);
     JSON_Value* mod_roles_value = json_object_get_value(root_obj, "mod_roles");
+    JSON_Value* max_mod_purge_per_hr_value = json_object_get_value(root_obj, "max_mod_purge_per_hr");
     JSON_Object* view_canvases_obj = json_object_get_object(root_obj, "view_canvases");
 
     parse_mod_roles("mod_roles", mod_roles_value, &config->mod_roles, &config->mod_roles_count);
 
+    config->max_hourly_mod_purge = (int) json_value_get_number(max_mod_purge_per_hr_value);
     config->view_canvases_count = json_object_get_count(view_canvases_obj);
     config->view_canvases = (struct view_canvas*) malloc(config->view_canvases_count * sizeof(struct view_canvas));
 

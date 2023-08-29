@@ -31,6 +31,7 @@ Create rplace_bot.json for bot-specific functionality like the following
 ```json
 {
     "mod_roles": [ "961684196387070022", "977717911764488242", "960971746842935297" ],
+    "max_mod_purge_per_hr": 300,
     "view_canvases": {
         "canvas1": {
             "socket": "wss://server.rplace.live:443",
