@@ -183,7 +183,7 @@ struct discord_user* resolve_user_mention(struct discord* client, const char* me
     }
 
     struct discord_user* user = malloc(sizeof(struct discord_user));
-    struct discord_ret_user ret_user = { .sync = &user };
+    struct discord_ret_user ret_user = { .sync = user };
     if (discord_get_user(client, member_id, &ret_user) != CCORD_OK)
     {
         return NULL;
@@ -207,7 +207,7 @@ void on_mod_help(struct discord* client, const struct discord_message* event)
     if (check_member_has_mod(client, event->guild_id, event->author->id))
     {
         embed.description = "**r/1984** `member` `period(s|m|h|d)` `reason`\nHide all the messages a user sends for a given period of time\n\n"
-            "**r/purge** `message count*` `member (optional)`\nClear 'n' message history of a user, or of a channel (if no member_id, max: 100 messages per 2 hours)\n\n"
+            "**r/purge** `message count` `member (optional)`\nClear 'n' message history of a user, or of a channel (if no member_id, max: 100 messages per 2 hours)\n\n"
             "**r/modhistory**\nDisplay a history of all actively and past used moderation commands\n\n";
     }
     else
@@ -330,21 +330,60 @@ void on_1984(struct discord* client, const struct discord_message* event)
     }
     reason = strdup(count_state);
 
-    const char* query_1984 = "INSERT INTO Censors (member_id, moderator_id, censor_start, censor_end, reason) VALUES (?, ?, ?, ?, ?)";
-    sqlite3_stmt* cmp_statement; // Compiled query statement
-    time_t current_time = time(NULL); // Unix timestamp since epoch (s)
-
-    if (sqlite3_prepare_v2(bot_db, query_1984, -1, &cmp_statement, 0) == SQLITE_OK)
+    const char* query_existing_1984 = "SELECT * FROM Censors WHERE member_id = ?";
+    sqlite3_stmt* existing_cmp_statement; // Compiled query statement
+    if (sqlite3_prepare_v2(bot_db, query_existing_1984, -1, &existing_cmp_statement, 0) != SQLITE_OK)
     {
-        sqlite3_bind_int64(cmp_statement, 1, member->id);
-        sqlite3_bind_int64(cmp_statement, 2, event->author->id);
-        sqlite3_bind_int64(cmp_statement, 3, current_time);
-        sqlite3_bind_int64(cmp_statement, 4, current_time + period_s);
-        sqlite3_bind_text(cmp_statement, 5, reason, -1, SQLITE_TRANSIENT);
+        free(member);
+        fprintf(stderr, "Could not prepare existing censor: %s\n", sqlite3_errmsg(bot_db));
+        
+        embed.description = "Failed to 1984 user. Internal bot error occured :skull:";
+        struct discord_create_message params = {
+            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
 
-        if (sqlite3_step(cmp_statement) != SQLITE_DONE)
+    sqlite3_bind_int64(existing_cmp_statement, 1, member->id);
+
+    // Existing, so we need to delete before making new (too lazy to update)
+    if (sqlite3_step(existing_cmp_statement) == SQLITE_ROW)
+    {
+        char* query_delete_1984 = sqlite3_mprintf("DELETE FROM Censors WHERE member_id='%llu'", member->id);
+        db_err = sqlite3_exec(bot_db, query_delete_1984, NULL, NULL, &db_err_msg);
+        if (db_err != SQLITE_OK)
         {
             free(member);
+            sqlite3_finalize(existing_cmp_statement);
+            fprintf(stderr, "Could not remove existing censor: %s\n", db_err_msg);
+            sqlite3_free(db_err_msg);
+
+            embed.description = "Failed to 1984 user. Internal bot error occured :skull:";
+            struct discord_create_message params = {
+                .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+            discord_create_message(client, event->channel_id, &params, NULL);
+            return;
+        }
+    }
+    sqlite3_finalize(existing_cmp_statement);
+
+    const char* query_insert_1984 = "INSERT INTO Censors (member_id, moderator_id, censor_start, censor_end, reason) VALUES (?, ?, ?, ?, ?)";
+    sqlite3_stmt* insert_cmp_statement;
+    time_t current_time = time(NULL); // Unix timestamp since epoch (s)
+
+    if (sqlite3_prepare_v2(bot_db, query_insert_1984, -1, &insert_cmp_statement, 0) == SQLITE_OK)
+    {
+        sqlite3_bind_int64(insert_cmp_statement, 1, member->id);
+        sqlite3_bind_int64(insert_cmp_statement, 2, event->author->id);
+        sqlite3_bind_int64(insert_cmp_statement, 3, current_time);
+        sqlite3_bind_int64(insert_cmp_statement, 4, current_time + period_s);
+        sqlite3_bind_text(insert_cmp_statement, 5, reason, -1, SQLITE_TRANSIENT);
+
+        if (sqlite3_step(insert_cmp_statement) != SQLITE_DONE)
+        {
+            free(member);
+            fprintf(stderr, "Could not prepare insert censor: %s\n", sqlite3_errmsg(bot_db));
+            
             embed.description = "Failed to 1984 user. Internal bot error occured :skull:";
             struct discord_create_message params = {
                 .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
@@ -352,8 +391,9 @@ void on_1984(struct discord* client, const struct discord_message* event)
             return;
         }
 
-        sqlite3_finalize(cmp_statement);
+        sqlite3_finalize(insert_cmp_statement);
     }
+    
 
     const char* raw_str_1984 = "Successfully 1984ed user **%s** for **%d %s** (reason: **%s**).";
     size_t str_1984_len = snprintf(NULL, 0, raw_str_1984, member->username, period_original, period_unit, reason) + 1;
@@ -429,26 +469,36 @@ void on_purge(struct discord* client, const struct discord_message* event)
     int moderator_hourly_purge = 0;
     const char* query_get_purges = "SELECT message_count FROM Purges WHERE moderator_id = ? AND purge_date > ?";
     sqlite3_stmt* get_cmp_statement;
-    db_err = sqlite3_prepare_v2(bot_db, query_get_purges, -1, &get_cmp_statement, NULL);
-
-    if (db_err != SQLITE_OK)
+    if (sqlite3_prepare_v2(bot_db, query_get_purges, -1, &get_cmp_statement, NULL) != SQLITE_OK)
     {
-        free(member);
-        fprintf(stderr, "Cannot prepare get rate limit purges: %s\n", sqlite3_errmsg(bot_db));
+        if (member != NULL)
+        {
+            free(member);
+        }
+        fprintf(stderr, "Could not prepare get rate limit purges: %s\n", sqlite3_errmsg(bot_db));
+
+        embed.description = "Failed to purge messages. An internal bot error occured :skull:";
+        struct discord_create_message params = {
+            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
 
     time_t current_time = time(NULL); // time since unix epoch (s)
 
-    sqlite3_bind_int64(get_cmp_statement, 0, event->author->id);
-    sqlite3_bind_int64(get_cmp_statement, 1, current_time - 3600);
+    sqlite3_bind_int64(get_cmp_statement, 1, event->author->id);
+    sqlite3_bind_int64(get_cmp_statement, 2, current_time - 3600);
 
     while (sqlite3_step(get_cmp_statement) == SQLITE_ROW)
     {
-        int message_count = sqlite3_column_int(get_cmp_statement, 0);
+        int message_count = sqlite3_column_int(get_cmp_statement, 3);
         if ((moderator_hourly_purge += message_count) > rplace_config->max_hourly_mod_purge)
         {
-            free(member);
+            if (member != NULL)
+            {
+                free(member);
+            }
+
             const char* raw_str_purge_cooldown = "Calm down! You can't purge more than %i messages within an hour.";
             size_t str_purge_cooldown_len = snprintf(NULL, 0, raw_str_purge_cooldown, rplace_config->max_hourly_mod_purge) + 1;
             char* str_purge_cooldown = malloc(str_purge_cooldown_len);
@@ -464,10 +514,13 @@ void on_purge(struct discord* client, const struct discord_message* event)
    
     if (sqlite3_step(get_cmp_statement) != SQLITE_DONE)
     {
-        free(member);
+        if (member != NULL)
+        {
+            free(member);
+        }
         fprintf(stderr, "Could not get purges history: %s\n", sqlite3_errmsg(bot_db));
 
-        embed.description = "Failed to purge user messages. Internal bot error occured :skull:";
+        embed.description = "Failed to purge messages. An internal bot error occured :skull:";
         struct discord_create_message params = {
             .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
         discord_create_message(client, event->channel_id, &params, NULL);
@@ -485,34 +538,30 @@ void on_purge(struct discord* client, const struct discord_message* event)
     // Channel purge
     if (member == NULL)
     {
-        int message_i = 0;
         struct discord_get_channel_messages params = { .limit = count };
-        while (message_i < params.limit)
+        struct discord_messages messages = { };
+        struct discord_ret_messages ret_messages = { .sync = &messages };
+        if (discord_get_channel_messages(client, event->channel_id, &params, &ret_messages) != CCORD_OK)
         {
-            struct discord_messages messages = { };
-            struct discord_ret_messages ret_messages = { .sync = &messages };
-            if (discord_get_channel_messages(client, event->channel_id, &params, &ret_messages) != CCORD_OK)
-            {
-                fprintf(stderr, "Could not get purge guild channel messages: %s\n", sqlite3_errmsg(bot_db));
-                continue;
-            }
-
-            for (message_i = 0; message_i < messages.size; message_i++)
-            {
-                if (member == NULL || (member->id == messages.array[message_i].author->id) && *messages.array[message_i].content)
-                {
-                    struct discord_delete_message delete_info = { .reason = delete_reason };
-                    discord_delete_message(client, event->channel_id, messages.array[message_i].id, &delete_info, NULL);
-                }
-            }
-
-            if (message_i)
-            {
-                params.before = messages.array[message_i - 1].id;
-            }
-
-            discord_messages_cleanup(&messages);
+            fprintf(stderr, "Could not get purge guild channel messages: %s\n", sqlite3_errmsg(bot_db));
+            
+            embed.description = "Failed to purge user messages. Internal bot error occured :skull:";
+            struct discord_create_message params = {
+                .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+            discord_create_message(client, event->channel_id, &params, NULL);
+            return;
         }
+
+        for (int message_i = 0; message_i < messages.size; message_i++)
+        {
+            if (messages.array[message_i].content != NULL)
+            {
+                struct discord_delete_message delete_info = { .reason = delete_reason };
+                discord_delete_message(client, event->channel_id, messages.array[message_i].id, &delete_info, NULL);
+            }
+        }
+
+        discord_messages_cleanup(&messages);
     }
     else // Member msg purge
     {
@@ -553,7 +602,7 @@ void on_purge(struct discord* client, const struct discord_message* event)
                     discord_delete_message(client, channels.array[channel_i].id, messages.array[message_i].id, &delete_info, NULL);
                 }
 
-                if (message_i)
+                if (message_i != 0)
                 {
                     params.before = messages.array[message_i - 1].id;
                 }
@@ -566,20 +615,43 @@ void on_purge(struct discord* client, const struct discord_message* event)
     }
 
     // Update database history with latest purge
-    const char* query_inset_purge = "INSERT INTO Purges VALUES(?, ?, ?, ?)";
+    const char* query_inset_purge = "INSERT INTO Purges (member_id, channel_id, moderator_id, message_count, purge_date) VALUES (?, ?, ?, ?, ?)";
     sqlite3_stmt* insert_cmp_statement;
 
     if (sqlite3_prepare_v2(bot_db, query_inset_purge, -1, &insert_cmp_statement, NULL) != SQLITE_OK)
     {
-        free(member);
-        fprintf(stderr, "Cannot could not prepare insert purge: %s\n", sqlite3_errmsg(bot_db));
+        if (member != NULL)
+        {
+            free(member);
+        }
+
+        fprintf(stderr, "Could not prepare insert purge: %s\n", sqlite3_errmsg(bot_db));
         return;
     }
 
-    sqlite3_bind_int64(insert_cmp_statement, 0, member->id);
-    sqlite3_bind_int64(insert_cmp_statement, 1, event->author->id);
-    sqlite3_bind_int(insert_cmp_statement, 2, count);
-    sqlite3_bind_int64(insert_cmp_statement, 3, current_time);
+    if (member == NULL)
+    {
+        sqlite3_bind_null(insert_cmp_statement, 1);
+        sqlite3_bind_int64(insert_cmp_statement, 2, event->channel_id);
+    }
+    else
+    {
+        sqlite3_bind_int64(insert_cmp_statement, 1, member->id);   
+        sqlite3_bind_null(insert_cmp_statement, 2);
+    }
+    sqlite3_bind_int64(insert_cmp_statement, 3, event->author->id);
+    sqlite3_bind_int(insert_cmp_statement, 4, count);
+    sqlite3_bind_int64(insert_cmp_statement, 5, current_time);
+    
+    if (sqlite3_step(insert_cmp_statement) != SQLITE_DONE)
+    {
+        fprintf(stderr, "Could not insert latest purge to history: %s\n", sqlite3_errmsg(bot_db));
+    }
+
+    if (member != NULL)
+    {
+        free(member);
+    }
 }
 
 void on_mod_history(struct discord* client, const struct discord_message* event)
@@ -615,16 +687,19 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
     sqlite3_stmt* censors_cmp_statement;
     db_err = sqlite3_prepare_v2(bot_db, query_get_censors, -1, &censors_cmp_statement, NULL);
 
-    if (db_err != SQLITE_OK) {
-        fprintf(stderr, "Cannot prepare get censors: %s\n", sqlite3_errmsg(bot_db));
+    if (db_err != SQLITE_OK)
+    {
+        fprintf(stderr, "Could not prepare get censors: %s\n", sqlite3_errmsg(bot_db));
         return;
     }
 
     while (sqlite3_step(censors_cmp_statement) == SQLITE_ROW)
     {
         const uint64_t start_date_i = sqlite3_column_int64(censors_cmp_statement, 2);
-        const uint64_t member_id = sqlite3_column_int64(censors_cmp_statement, 0);
-        const uint64_t moderator_id = sqlite3_column_int64(censors_cmp_statement, 1);
+        const uint64_t int_member_id = sqlite3_column_int64(censors_cmp_statement, 0);
+        const char* str_member_id = sqlite3_column_text(censors_cmp_statement, 0);
+        const uint64_t int_moderator_id = sqlite3_column_int64(censors_cmp_statement, 1);
+        const char* str_moderator_id = sqlite3_column_text(censors_cmp_statement, 1);
         const uint64_t end_date_i = sqlite3_column_int64(censors_cmp_statement, 3);
         const char* reason = sqlite3_column_text(censors_cmp_statement, 4);
 
@@ -638,19 +713,39 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
         size_t ed_s = strftime(end_date, sizeof(end_date), "%d/%m/%Y %H:%M", end_date_t);
         end_date[ed_s] = '\0';
         
-        size_t new_table_len = snprintf(NULL, 0, "**Start date:** %s\n \
+        const char* member_name = NULL;
+        struct discord_user* member = malloc(sizeof(struct discord_user));
+        struct discord_ret_user ret_member = { .sync = member };
+        if (discord_get_user(client, int_member_id, &ret_member) == CCORD_OK)
+        {
+            member_name = member->username;
+        }
+        if (member_name == NULL)
+        {
+            member_name = str_member_id;
+        }
+
+        const char* mod_name = NULL;
+        struct discord_user* mod = malloc(sizeof(struct discord_user));
+        struct discord_ret_user ret_mod = { .sync = mod };
+        if (discord_get_user(client, int_member_id, &ret_mod) == CCORD_OK)
+        {
+            mod_name = member->username;
+        }
+        if (mod_name == NULL)
+        {
+            mod_name = str_moderator_id;
+        }
+
+        const char* raw_new_table = "**Start date:** %s\n \
             **Member:** %s\n \
             **Moderator:** %s\n \
             **End date:** %s\n \
             **Reason:** %s\n \
-            \n\n", start_date, "MEMBER", "MODERATOR", end_date, reason);
+            \n\n";
+        size_t new_table_len = snprintf(NULL, 0, raw_new_table, start_date, member_name, mod_name, end_date, reason);
         char* new_table = malloc(new_table_len + 1);
-        snprintf(new_table, new_table_len, "**Start date:** %s\n \
-            **Member:** %s\n \
-            **Moderator:** %s\n \
-            **End date:** %s\n \
-            **Reason:** %s\n \
-            \n\n", start_date, "MEMBER", "MODERATOR", end_date, reason);
+        snprintf(new_table, new_table_len, raw_new_table, start_date, member_name, mod_name, end_date, reason);
 
         tables_used += new_table_len;
         if (tables_used > tables_len)
@@ -667,9 +762,20 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
 
         strcat(tables, new_table);
     }
-
     sqlite3_finalize(censors_cmp_statement);
     strcat(tables, tables_purges_title);
+
+    const char* query_get_purges = "SELECT * FROM Purges;";
+    sqlite3_stmt* purges_cmp_statement;
+    db_err = sqlite3_prepare_v2(bot_db, query_get_censors, -1, &censors_cmp_statement, NULL);
+
+    if (db_err != SQLITE_OK)
+    {
+        fprintf(stderr, "Could not prepare get censors: %s\n", sqlite3_errmsg(bot_db));
+        return;
+    }
+
+    // A
 
     embed.description = tables;
     struct discord_create_message params = {
@@ -1317,6 +1423,7 @@ int main(int argc, char* argv[])
 
     sqlite3_exec(bot_db, "CREATE TABLE IF NOT EXISTS Purges ( \
             member_id INTEGER, \
+            channel_id INTEGER, \
             moderator_id INTEGER, \
             message_count INTEGER, \
             purge_date INTEGER \
