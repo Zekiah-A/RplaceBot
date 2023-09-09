@@ -3,7 +3,8 @@
 // does not implement a cmakelists.txt to be compiled alongside this project as a gitmodule
 // You will also have to self compile CURL with websocket support if you receive 'curl_easy_perform() failed: Unsupported protocol'
 // error messages. To check if your cURL has support, run curl --version and check for ws/wss protocols present.
-// This project can be compiled easily with gcc main.c lib/parson.c lib/parson.h -o RplaceBot -pthread -ldiscord -lcurl -lpng -lsqlite3 -Wall -Wextra -Wno-unused-parameter
+// This project can be compiled easily with gcc main.c lib/parson.c lib/parson.h -o RplaceBot -pthread -ldiscord -lcurl -lpng -lsqlite3
+// This project can be debugged with flags -Wall -Wextra -Wno-unused-parameter / -g -fsanitize=address
 #include <stdio.h>
 #include <stdlib.h>
 #include <concord/discord.h>
@@ -653,18 +654,18 @@ void on_purge(struct discord* client, const struct discord_message* event)
     }
 }
 
-void ensure_tables_capacity(char* tables, int* tables_used, int* tables_len, int new_table_len)
+void ensure_tables_capacity(char** tables, int* tables_used, int* tables_len, int new_table_len)
 {
-    *tables_used += new_table_len;
+    (*tables_used) += new_table_len;
     if (*tables_used > *tables_len)
     {
         int realloc_size = *tables_len;
-        while (realloc_size < tables_used)
+        while (realloc_size < *tables_used)
         {
             realloc_size *= 2;
         }
 
-        tables = realloc(tables, realloc_size);
+        (*tables) = realloc(*tables, realloc_size);
         *tables_len = realloc_size;
     }
 }
@@ -762,7 +763,7 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
         char* new_table = malloc(new_table_len + 1);
         snprintf(new_table, new_table_len, raw_new_table, start_date, member_name, mod_name, end_date, reason);
 
-        ensure_tables_capacity(tables, &tables_used, &tables_len, new_table_len);
+        ensure_tables_capacity(&tables, &tables_used, &tables_len, new_table_len);
         strcat(tables, new_table);
     }
     sqlite3_finalize(censors_cmp_statement);
@@ -790,9 +791,9 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
         size_t sd_s = strftime(purge_date, sizeof(purge_date), "%d/%m/%Y %H:%M", purge_date_t);
         purge_date[sd_s] = '\0';
 
-        char* raw_new_table;
-        size_t new_table_len;
-        char* new_table;
+        char* raw_new_table = NULL;
+        size_t new_table_len = 0;
+        char* new_table = NULL;
 
         const char* mod_name = NULL;
         struct discord_user* mod = malloc(sizeof(struct discord_user)); // TODO: These do not need to be malloced!
@@ -829,8 +830,8 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
                 **Purge date:** %s\n \
                 **Message count:** %d\n \
                 \n\n";
-            new_table_len = snprintf(NULL, 0, raw_new_table, member_name, mod_name, purge_date, message_count);
-            new_table = malloc(new_table_len + 1);
+            new_table_len = snprintf(NULL, 0, raw_new_table, member_name, mod_name, purge_date, message_count) + 1;
+            new_table = malloc(new_table_len);
             snprintf(new_table, new_table_len, raw_new_table, member_name, mod_name, purge_date, message_count);
         }
         else
@@ -839,7 +840,7 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
             const char* str_channel_id = sqlite3_column_text(purges_cmp_statement, 1);
 
             const char* channel_name = NULL;
-            struct discord_channel* channel = malloc(sizeof(struct discord_user)); // TODO: These do not need to be malloced!
+            struct discord_channel* channel = malloc(sizeof(struct discord_channel)); // TODO: These do not need to be malloced!
             struct discord_ret_channel ret_chanel = { .sync = channel };
             if (discord_get_channel(client, int_channel_id, &ret_chanel) == CCORD_OK)
             {
@@ -856,12 +857,12 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
                 **Purge date:** %s\n \
                 **Message count:** %d\n \
                 \n\n";
-            new_table_len = snprintf(NULL, 0, raw_new_table, channel_name, mod_name, purge_date, message_count);
-            new_table = malloc(new_table_len + 1);
+            new_table_len = snprintf(NULL, 0, raw_new_table, channel_name, mod_name, purge_date, message_count) + 1;
+            new_table = malloc(new_table_len);
             snprintf(new_table, new_table_len, raw_new_table, channel_name, mod_name, purge_date, message_count);
         }
 
-        ensure_tables_capacity(tables, &tables_used, &tables_len, new_table_len);
+        ensure_tables_capacity(&tables, &tables_used, &tables_len, new_table_len);
         strcat(tables, new_table);
     }
     sqlite3_finalize(purges_cmp_statement);

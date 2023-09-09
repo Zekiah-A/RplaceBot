@@ -63,6 +63,8 @@ error messages. To check if your cURL has support, run curl --version and check 
 
  - This project can be compiled easily with `gcc main.c lib/parson.c lib/parson.h -o RplaceBot -pthread -ldiscord -lcurl -lpng -lsqlite3 -Wall -Wextra -Wno-unused-parameter` and ran with ./RplaceBot.
 
+ - This project can be debugged with flags `-Wall -Wextra -Wno-unused-parameter` / `-g -fsanitize=address` and gdb.
+
 ## Notes:
  - The parameter mod_roles in rplace_bot.json must be an array of strings due to parsing library limitations.
  - Bot data is stored in a SQLITE DB file called `rplace_bot.db`.
