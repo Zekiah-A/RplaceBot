@@ -394,11 +394,10 @@ void on_1984(struct discord* client, const struct discord_message* event)
         sqlite3_finalize(insert_cmp_statement);
     }
     
-
     const char* raw_str_1984 = "Successfully 1984ed user **%s** for **%d %s** (reason: **%s**).";
     size_t str_1984_len = snprintf(NULL, 0, raw_str_1984, member->username, period_original, period_unit, reason) + 1;
     char* str_1984 = malloc(str_1984_len);
-    snprintf(str_1984, str_1984_len, raw_str_1984, member->id, period_original, period_unit, reason);
+    snprintf(str_1984, str_1984_len, raw_str_1984, member->username, period_original, period_unit, reason);
     embed.description = str_1984;
 
     struct discord_create_message params = {
@@ -654,6 +653,22 @@ void on_purge(struct discord* client, const struct discord_message* event)
     }
 }
 
+void ensure_tables_capacity(char* tables, int* tables_used, int* tables_len, int new_table_len)
+{
+    *tables_used += new_table_len;
+    if (*tables_used > *tables_len)
+    {
+        int realloc_size = *tables_len;
+        while (realloc_size < tables_used)
+        {
+            realloc_size *= 2;
+        }
+
+        tables = realloc(tables, realloc_size);
+        *tables_len = realloc_size;
+    }
+}
+
 void on_mod_history(struct discord* client, const struct discord_message* event)
 {
     struct discord_embed embed = {
@@ -676,7 +691,7 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
     }
 
     const char* tables_censors_title = "**__Censors history:__**\n"; 
-    const char* tables_purges_title = "**__Purges history:__\n**";
+    const char* tables_purges_title = "**__Purges history:__**\n";
 
     int tables_len = strlen(tables_censors_title) + strlen(tables_purges_title) + 1;
     int tables_used = tables_len;
@@ -707,12 +722,12 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
         struct tm* start_date_t = localtime(&start_date_i);
         size_t sd_s = strftime(start_date, sizeof(start_date), "%d/%m/%Y %H:%M", start_date_t);
         start_date[sd_s] = '\0';
-        
+
         char end_date[32];
         struct tm* end_date_t = localtime(&end_date_i);
         size_t ed_s = strftime(end_date, sizeof(end_date), "%d/%m/%Y %H:%M", end_date_t);
         end_date[ed_s] = '\0';
-        
+
         const char* member_name = NULL;
         struct discord_user* member = malloc(sizeof(struct discord_user));
         struct discord_ret_user ret_member = { .sync = member };
@@ -728,9 +743,9 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
         const char* mod_name = NULL;
         struct discord_user* mod = malloc(sizeof(struct discord_user));
         struct discord_ret_user ret_mod = { .sync = mod };
-        if (discord_get_user(client, int_member_id, &ret_mod) == CCORD_OK)
+        if (discord_get_user(client, int_moderator_id, &ret_mod) == CCORD_OK)
         {
-            mod_name = member->username;
+            mod_name = mod->username;
         }
         if (mod_name == NULL)
         {
@@ -747,19 +762,7 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
         char* new_table = malloc(new_table_len + 1);
         snprintf(new_table, new_table_len, raw_new_table, start_date, member_name, mod_name, end_date, reason);
 
-        tables_used += new_table_len;
-        if (tables_used > tables_len)
-        {
-            int realloc_size = tables_len;
-            while (realloc_size < tables_used)
-            {
-                realloc_size *= 2;
-            }
-
-            tables = realloc(tables, realloc_size);
-            tables_len = realloc_size;
-        }
-
+        ensure_tables_capacity(tables, &tables_used, &tables_len, new_table_len);
         strcat(tables, new_table);
     }
     sqlite3_finalize(censors_cmp_statement);
@@ -767,7 +770,7 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
 
     const char* query_get_purges = "SELECT * FROM Purges;";
     sqlite3_stmt* purges_cmp_statement;
-    db_err = sqlite3_prepare_v2(bot_db, query_get_censors, -1, &censors_cmp_statement, NULL);
+    db_err = sqlite3_prepare_v2(bot_db, query_get_purges, -1, &purges_cmp_statement, NULL);
 
     if (db_err != SQLITE_OK)
     {
@@ -775,7 +778,93 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
         return;
     }
 
-    // A
+    while (sqlite3_step(purges_cmp_statement) == SQLITE_ROW)
+    {
+        const char* str_moderator_id = sqlite3_column_text(purges_cmp_statement, 2);
+        const uint64_t int_moderator_id = sqlite3_column_int64(purges_cmp_statement, 2);
+        const int message_count = sqlite3_column_int(purges_cmp_statement, 3);
+        const uint64_t purge_date_i = sqlite3_column_int64(purges_cmp_statement, 4);
+
+        char purge_date[32];
+        struct tm* purge_date_t = localtime(&purge_date_i);
+        size_t sd_s = strftime(purge_date, sizeof(purge_date), "%d/%m/%Y %H:%M", purge_date_t);
+        purge_date[sd_s] = '\0';
+
+        char* raw_new_table;
+        size_t new_table_len;
+        char* new_table;
+
+        const char* mod_name = NULL;
+        struct discord_user* mod = malloc(sizeof(struct discord_user)); // TODO: These do not need to be malloced!
+        struct discord_ret_user ret_mod = { .sync = mod };
+        if (discord_get_user(client, int_moderator_id, &ret_mod) == CCORD_OK)
+        {
+            mod_name = mod->username;
+        }
+        if (mod_name == NULL)
+        {
+            mod_name = str_moderator_id;
+        }
+
+        if (sqlite3_column_type(purges_cmp_statement, 0) != SQLITE_NULL)
+        {
+            const uint64_t int_member_id = sqlite3_column_int64(purges_cmp_statement, 0);
+            const char* str_member_id = sqlite3_column_text(purges_cmp_statement, 0);
+
+            const char* member_name = NULL;
+            struct discord_user* member = malloc(sizeof(struct discord_user)); // TODO: These do not need to be malloced!
+            struct discord_ret_user ret_member = { .sync = member };
+            if (discord_get_user(client, int_member_id, &ret_member) == CCORD_OK)
+            {
+                member_name = member->username;
+            }
+            if (member_name == NULL)
+            {
+                member_name = str_member_id;
+            }
+
+            raw_new_table = "**Type:** Member purge\n \
+                **Member:** %s\n \
+                **Moderator:** %s\n \
+                **Purge date:** %s\n \
+                **Message count:** %d\n \
+                \n\n";
+            new_table_len = snprintf(NULL, 0, raw_new_table, member_name, mod_name, purge_date, message_count);
+            new_table = malloc(new_table_len + 1);
+            snprintf(new_table, new_table_len, raw_new_table, member_name, mod_name, purge_date, message_count);
+        }
+        else
+        {
+            const uint64_t int_channel_id = sqlite3_column_int64(purges_cmp_statement, 1);
+            const char* str_channel_id = sqlite3_column_text(purges_cmp_statement, 1);
+
+            const char* channel_name = NULL;
+            struct discord_channel* channel = malloc(sizeof(struct discord_user)); // TODO: These do not need to be malloced!
+            struct discord_ret_channel ret_chanel = { .sync = channel };
+            if (discord_get_channel(client, int_channel_id, &ret_chanel) == CCORD_OK)
+            {
+                channel_name = channel->name;
+            }
+            if (channel_name == NULL)
+            {
+                channel_name = str_channel_id;
+            }
+
+            raw_new_table = "**Type:** Channel purge\n \
+                **Channel:** %s\n \
+                **Moderator:** %s\n \
+                **Purge date:** %s\n \
+                **Message count:** %d\n \
+                \n\n";
+            new_table_len = snprintf(NULL, 0, raw_new_table, channel_name, mod_name, purge_date, message_count);
+            new_table = malloc(new_table_len + 1);
+            snprintf(new_table, new_table_len, raw_new_table, channel_name, mod_name, purge_date, message_count);
+        }
+
+        ensure_tables_capacity(tables, &tables_used, &tables_len, new_table_len);
+        strcat(tables, new_table);
+    }
+    sqlite3_finalize(purges_cmp_statement);
 
     embed.description = tables;
     struct discord_create_message params = {
