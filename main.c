@@ -51,6 +51,15 @@ struct view_canvas {
     int height;
 };
 
+struct censor {
+    u64snowflake member_id;
+    time_t end_date;
+};
+
+struct censor* active_censors;
+int active_censors_size = 0;
+int active_censors_capacity = 0;
+
 struct config* rplace_config;
 
 struct discord_client_message_info {
@@ -223,6 +232,27 @@ void on_mod_help(struct discord* client, const struct discord_message* event)
     discord_create_message(client, event->channel_id, &params, NULL);
 }
 
+void add_active_censor(u64snowflake member_id, time_t censor_end)
+{
+    active_censors_size++;
+    if (active_censors_size > active_censors_capacity)
+    {
+        if (!active_censors_capacity)
+        {
+            active_censors_capacity++;
+        }
+        while (active_censors_size > active_censors_capacity)
+        {
+            active_censors_capacity *= 2;
+        }
+
+        active_censors = realloc(active_censors, active_censors_capacity * sizeof(struct censor));
+    }
+
+    active_censors[active_censors_size - 1] = (struct censor)
+        { .member_id = member_id, .end_date = censor_end };
+}
+
 void on_1984(struct discord* client, const struct discord_message* event)
 {
     struct discord_embed embed = {
@@ -331,7 +361,7 @@ void on_1984(struct discord* client, const struct discord_message* event)
     }
     reason = strdup(count_state);
 
-    const char* query_existing_1984 = "SELECT * FROM Censors WHERE member_id = ?";
+    const char* query_existing_1984 = "SELECT * FROM CensorsHistory WHERE member_id = ?";
     sqlite3_stmt* existing_cmp_statement; // Compiled query statement
     if (sqlite3_prepare_v2(bot_db, query_existing_1984, -1, &existing_cmp_statement, 0) != SQLITE_OK)
     {
@@ -344,13 +374,12 @@ void on_1984(struct discord* client, const struct discord_message* event)
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
-
     sqlite3_bind_int64(existing_cmp_statement, 1, member->id);
 
     // Existing, so we need to delete before making new (too lazy to update)
     if (sqlite3_step(existing_cmp_statement) == SQLITE_ROW)
     {
-        char* query_delete_1984 = sqlite3_mprintf("DELETE FROM Censors WHERE member_id='%llu'", member->id);
+        char* query_delete_1984 = sqlite3_mprintf("DELETE FROM CensorsHistory WHERE member_id='%llu'", member->id);
         db_err = sqlite3_exec(bot_db, query_delete_1984, NULL, NULL, &db_err_msg);
         if (db_err != SQLITE_OK)
         {
@@ -368,7 +397,7 @@ void on_1984(struct discord* client, const struct discord_message* event)
     }
     sqlite3_finalize(existing_cmp_statement);
 
-    const char* query_insert_1984 = "INSERT INTO Censors (member_id, moderator_id, censor_start, censor_end, reason) VALUES (?, ?, ?, ?, ?)";
+    const char* query_insert_1984 = "INSERT INTO CensorsHistory (member_id, moderator_id, censor_start, censor_end, reason) VALUES (?, ?, ?, ?, ?)";
     sqlite3_stmt* insert_cmp_statement;
     time_t current_time = time(NULL); // Unix timestamp since epoch (s)
 
@@ -383,7 +412,7 @@ void on_1984(struct discord* client, const struct discord_message* event)
         if (sqlite3_step(insert_cmp_statement) != SQLITE_DONE)
         {
             free(member);
-            fprintf(stderr, "Could not prepare insert censor: %s\n", sqlite3_errmsg(bot_db));
+            fprintf(stderr, "Could not insert censor: %s\n", sqlite3_errmsg(bot_db));
             
             embed.description = "Failed to 1984 user. Internal bot error occured :skull:";
             struct discord_create_message params = {
@@ -394,6 +423,18 @@ void on_1984(struct discord* client, const struct discord_message* event)
 
         sqlite3_finalize(insert_cmp_statement);
     }
+    else
+    {
+        free(member);
+        fprintf(stderr, "Could not prepare insert censor: %s\n", sqlite3_errmsg(bot_db));
+        
+        embed.description = "Failed to 1984 user. Internal bot error occured :skull:";
+        struct discord_create_message params = {
+            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+    add_active_censor(member->id, current_time + period_s);
     
     const char* raw_str_1984 = "Successfully 1984ed user **%s** for **%d %s** (reason: **%s**).";
     size_t str_1984_len = snprintf(NULL, 0, raw_str_1984, member->username, period_original, period_unit, reason) + 1;
@@ -467,7 +508,7 @@ void on_purge(struct discord* client, const struct discord_message* event)
 
     // Block mods from abusing to purge insane message counts
     int moderator_hourly_purge = 0;
-    const char* query_get_purges = "SELECT message_count FROM Purges WHERE moderator_id = ? AND purge_date > ?";
+    const char* query_get_purges = "SELECT message_count FROM PurgesHistory WHERE moderator_id = ? AND purge_date > ?";
     sqlite3_stmt* get_cmp_statement;
     if (sqlite3_prepare_v2(bot_db, query_get_purges, -1, &get_cmp_statement, NULL) != SQLITE_OK)
     {
@@ -489,9 +530,10 @@ void on_purge(struct discord* client, const struct discord_message* event)
     sqlite3_bind_int64(get_cmp_statement, 1, event->author->id);
     sqlite3_bind_int64(get_cmp_statement, 2, current_time - 3600);
 
-    while (sqlite3_step(get_cmp_statement) == SQLITE_ROW)
+    int step = sqlite3_step(get_cmp_statement);
+    while (step == SQLITE_ROW)
     {
-        int message_count = sqlite3_column_int(get_cmp_statement, 3);
+        int message_count = sqlite3_column_int(get_cmp_statement, 1);
         if ((moderator_hourly_purge += message_count) > rplace_config->max_hourly_mod_purge)
         {
             if (member != NULL)
@@ -510,9 +552,11 @@ void on_purge(struct discord* client, const struct discord_message* event)
             discord_create_message(client, event->channel_id, &params, NULL);
             return;
         }
+
+        step = sqlite3_step(get_cmp_statement);
     }
-   
-    if (sqlite3_step(get_cmp_statement) != SQLITE_DONE)
+
+    if (step != SQLITE_DONE)
     {
         if (member != NULL)
         {
@@ -615,7 +659,7 @@ void on_purge(struct discord* client, const struct discord_message* event)
     }
 
     // Update database history with latest purge
-    const char* query_inset_purge = "INSERT INTO Purges (member_id, channel_id, moderator_id, message_count, purge_date) VALUES (?, ?, ?, ?, ?)";
+    const char* query_inset_purge = "INSERT INTO PurgesHistory (member_id, channel_id, moderator_id, message_count, purge_date) VALUES (?, ?, ?, ?, ?)";
     sqlite3_stmt* insert_cmp_statement;
 
     if (sqlite3_prepare_v2(bot_db, query_inset_purge, -1, &insert_cmp_statement, NULL) != SQLITE_OK)
@@ -692,14 +736,14 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
     }
 
     const char* tables_censors_title = "**__Censors history:__**\n"; 
-    const char* tables_purges_title = "**__Purges history:__**\n";
+    const char* tables_purges_title = "\n**__Purges history:__**\n";
 
     int tables_len = strlen(tables_censors_title) + strlen(tables_purges_title) + 1;
     int tables_used = tables_len;
     char* tables = malloc(tables_len);
     strcpy(tables, tables_censors_title);
 
-    const char* query_get_censors = "SELECT * FROM Censors;";
+    const char* query_get_censors = "SELECT * FROM CensorsHistory;";
     sqlite3_stmt* censors_cmp_statement;
     db_err = sqlite3_prepare_v2(bot_db, query_get_censors, -1, &censors_cmp_statement, NULL);
 
@@ -758,10 +802,18 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
             **Moderator:** %s\n \
             **End date:** %s\n \
             **Reason:** %s\n \
-            \n\n";
-        size_t new_table_len = snprintf(NULL, 0, raw_new_table, start_date, member_name, mod_name, end_date, reason);
+            ------------------------\n";
+        const char* raw_new_table_active = "**Start date:** %s\n \
+            **Member:** %s\n \
+            **Moderator:** %s\n \
+            **End date:** %s ✅ _currently active_\n \
+            **Reason:** %s\n \
+            ------------------------\n";
+        const char* selected_new_table = end_date_i > time(NULL) ? raw_new_table_active : raw_new_table;
+
+        size_t new_table_len = snprintf(NULL, 0, selected_new_table, start_date, member_name, mod_name, end_date, reason);
         char* new_table = malloc(new_table_len + 1);
-        snprintf(new_table, new_table_len, raw_new_table, start_date, member_name, mod_name, end_date, reason);
+        snprintf(new_table, new_table_len, selected_new_table, start_date, member_name, mod_name, end_date, reason);
 
         ensure_tables_capacity(&tables, &tables_used, &tables_len, new_table_len);
         strcat(tables, new_table);
@@ -769,7 +821,7 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
     sqlite3_finalize(censors_cmp_statement);
     strcat(tables, tables_purges_title);
 
-    const char* query_get_purges = "SELECT * FROM Purges;";
+    const char* query_get_purges = "SELECT * FROM PurgesHistory;";
     sqlite3_stmt* purges_cmp_statement;
     db_err = sqlite3_prepare_v2(bot_db, query_get_purges, -1, &purges_cmp_statement, NULL);
 
@@ -829,7 +881,7 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
                 **Moderator:** %s\n \
                 **Purge date:** %s\n \
                 **Message count:** %d\n \
-                \n\n";
+                ------------------------\n";
             new_table_len = snprintf(NULL, 0, raw_new_table, member_name, mod_name, purge_date, message_count) + 1;
             new_table = malloc(new_table_len);
             snprintf(new_table, new_table_len, raw_new_table, member_name, mod_name, purge_date, message_count);
@@ -837,29 +889,15 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
         else
         {
             const uint64_t int_channel_id = sqlite3_column_int64(purges_cmp_statement, 1);
-            const char* str_channel_id = sqlite3_column_text(purges_cmp_statement, 1);
-
-            const char* channel_name = NULL;
-            struct discord_channel* channel = malloc(sizeof(struct discord_channel)); // TODO: These do not need to be malloced!
-            struct discord_ret_channel ret_chanel = { .sync = channel };
-            if (discord_get_channel(client, int_channel_id, &ret_chanel) == CCORD_OK)
-            {
-                channel_name = channel->name;
-            }
-            if (channel_name == NULL)
-            {
-                channel_name = str_channel_id;
-            }
-
             raw_new_table = "**Type:** Channel purge\n \
-                **Channel:** %s\n \
+                **Channel:** <#%llu>\n \
                 **Moderator:** %s\n \
                 **Purge date:** %s\n \
                 **Message count:** %d\n \
-                \n\n";
-            new_table_len = snprintf(NULL, 0, raw_new_table, channel_name, mod_name, purge_date, message_count) + 1;
+                ------------------------\n";
+            new_table_len = snprintf(NULL, 0, raw_new_table, int_channel_id, mod_name, purge_date, message_count) + 1;
             new_table = malloc(new_table_len);
-            snprintf(new_table, new_table_len, raw_new_table, channel_name, mod_name, purge_date, message_count);
+            snprintf(new_table, new_table_len, raw_new_table, int_channel_id, mod_name, purge_date, message_count);
         }
 
         ensure_tables_capacity(&tables, &tables_used, &tables_len, new_table_len);
@@ -1309,49 +1347,6 @@ void on_status(struct discord* client, const struct discord_message* event) {
     pthread_mutex_unlock(&fetch_lock);
 }
 
-static int censor_callback(void* info_void, int column_count, char** data, char** columns)
-{
-    struct discord_client_message_info* info = (struct discord_client_message_info*) info_void; 
-    time_t censor_end_date = INT64_MAX;
-    time_t current_date = time(NULL);
-    char* reason = NULL;
-
-    for (int i = 0; i < column_count; i++)
-    {
-        const char* str_name = columns[i];
-        const char* str_value = data[i];
-
-        if (strcmp(str_name, "censor_end") == 0)
-        {
-            censor_end_date = strtoull(str_value, NULL, 10);
-        }
-        else if (strcmp(str_name, "reason") == 0)
-        {
-            reason = strdup(str_value);
-        }
-    }
-
-    if (current_date > censor_end_date)
-    {
-        char* query_1984 = sqlite3_mprintf("DELETE FROM Censors WHERE member_id='%llu'", info->author_id);
-        db_err = sqlite3_exec(bot_db, query_1984, NULL, NULL, &db_err_msg);
-        if (db_err != SQLITE_OK)
-        {
-            fprintf(stderr, "SQL error: Could not remove censor for client: %s\n", db_err_msg);
-            sqlite3_free(db_err_msg);
-        }
-
-        return 0;
-    }
-
-    struct discord_delete_message delete_info = { .reason = reason };
-    discord_delete_message(info->client, info->channel_id, info->message_id, &delete_info, NULL);
-    free(info);
-    free(reason);
-
-    return 0;
-}
-
 regex_t rplace_over_regex;
 
 void on_message(struct discord* client, const struct discord_message* event)
@@ -1370,21 +1365,28 @@ void on_message(struct discord* client, const struct discord_message* event)
         fprintf(stderr, "Regex match failed: %s\n", error_buffer);
     }
 
-    struct discord_client_message_info* info = malloc(sizeof(struct discord_client_message_info));
-    info->client = client;
-    info->message_id = event->id;
-    info->channel_id = event->channel_id;
-    info->author_id = event->author->id;
-
-    char* query_1984 = sqlite3_mprintf("SELECT * FROM Censors WHERE member_id='%llu'", event->author->id);
-    db_err = sqlite3_exec(bot_db, query_1984, censor_callback, info, &db_err_msg);
-    if (db_err != SQLITE_OK)
+    time_t current_time = time(NULL);
+    for (int i = 0; i < active_censors_size; i++)
     {
-        fprintf(stderr, "SQL error: Could not check message against censors: %s\n", db_err_msg);
-        sqlite3_free(db_err_msg);
-    }
+        if (active_censors[i].member_id != event->author->id)
+        {
+            continue;
+        }
 
-    sqlite3_free(query_1984);
+        if (active_censors[i].end_date > current_time)
+        {
+            struct discord_delete_message delete_info = { };
+            discord_delete_message(client, event->channel_id, event->id, &delete_info, NULL);
+        }
+        else
+        {
+            // Remove this from active censors
+            memmove(active_censors + (sizeof(struct censor) * i),
+                (&active_censors[i + 1]),
+                sizeof(struct censor) * (active_censors_capacity - i));
+            active_censors_size--;
+        }
+    }
 }
 
 void parse_view_canvases(const char* key, JSON_Value* value, struct view_canvas* canvas) {
@@ -1498,7 +1500,7 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    db_err = sqlite3_exec(bot_db, "CREATE TABLE IF NOT EXISTS Censors ( \
+    db_err = sqlite3_exec(bot_db, "CREATE TABLE IF NOT EXISTS CensorsHistory ( \
             member_id INTEGER PRIMARY KEY UNIQUE, \
             moderator_id INTEGER, \
             censor_start INTEGER, \
@@ -1507,11 +1509,11 @@ int main(int argc, char* argv[])
         )", NULL, NULL, &db_err_msg);
     if (db_err != SQLITE_OK)
     {
-        fprintf(stderr, "SQL error: Could not create Censors table: %s\n", db_err_msg);
+        fprintf(stderr, "SQL error: Could not create Censors History table: %s\n", db_err_msg);
         sqlite3_free(db_err_msg);
     }
 
-    sqlite3_exec(bot_db, "CREATE TABLE IF NOT EXISTS Purges ( \
+    sqlite3_exec(bot_db, "CREATE TABLE IF NOT EXISTS PurgesHistory ( \
             member_id INTEGER, \
             channel_id INTEGER, \
             moderator_id INTEGER, \
@@ -1520,8 +1522,31 @@ int main(int argc, char* argv[])
         )", NULL, NULL, &db_err_msg);
     if (db_err != SQLITE_OK)
     {
-        fprintf(stderr, "SQL error: Could not create Purges table: %s\n", db_err_msg);
+        fprintf(stderr, "SQL error: Could not create PurgesHistory table: %s\n", db_err_msg);
         sqlite3_free(db_err_msg);
+    }
+
+    // Load all applicable current active from censors history into memory
+    const char* query_get_active_censors = "SELECT member_id, censor_end FROM CensorsHistory WHERE censor_end > ?";
+    sqlite3_stmt* get_cmp_statement;
+    if (sqlite3_prepare_v2(bot_db, query_get_active_censors, -1, &get_cmp_statement, NULL) != SQLITE_OK)
+    {
+        fprintf(stderr, "Could not prepare get active censors: %s\n", sqlite3_errmsg(bot_db));
+        return 1;
+    }
+    sqlite3_bind_int64(get_cmp_statement, 1, time(NULL));
+
+    int step = sqlite3_step(get_cmp_statement);
+    while (step == SQLITE_ROW)
+    {
+        add_active_censor(sqlite3_column_int64(get_cmp_statement, 0),
+            sqlite3_column_int64(get_cmp_statement, 1));
+        step = sqlite3_step(get_cmp_statement);
+    }
+    if (step != SQLITE_DONE)
+    {
+        fprintf(stderr, "Could not apply active censors: %s\n", sqlite3_errmsg(bot_db));
+        return 1;
     }
 
     _discord_client = client;
