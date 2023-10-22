@@ -44,6 +44,7 @@
 
 # Editor
 .vscode/
+.idea/
 
 # Kernel Module Compile Results
 *.mod*
@@ -53,6 +54,9 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# Cmake
+cmake-build-debug
 
 # Project specific
 config.json

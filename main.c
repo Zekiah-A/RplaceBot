@@ -14,7 +14,6 @@
 #include <string.h>
 #include <sys/param.h>
 #include <pthread.h>
-#include <stdint.h>
 #include <alloca.h>
 #include <regex.h>
 #include <sqlite3.h>
@@ -25,12 +24,6 @@
 struct memory_fetch {
     size_t size;
     uint8_t* memory;
-};
-
-struct colour {
-    uint8_t red;
-    uint8_t green;
-    uint8_t blue;
 };
 
 struct config {
@@ -61,13 +54,6 @@ int active_censors_size = 0;
 int active_censors_capacity = 0;
 
 struct config* rplace_config;
-
-struct discord_client_message_info {
-    struct discord* client;
-    u64snowflake message_id;
-    u64snowflake channel_id;
-    u64snowflake author_id;
-};
 
 uint8_t default_palette[32][3] = {
     {109, 0, 26},
@@ -757,11 +743,11 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
     {
         const uint64_t start_date_i = sqlite3_column_int64(censors_cmp_statement, 2);
         const uint64_t int_member_id = sqlite3_column_int64(censors_cmp_statement, 0);
-        const char* str_member_id = sqlite3_column_text(censors_cmp_statement, 0);
+        const unsigned char* str_member_id = sqlite3_column_text(censors_cmp_statement, 0);
         const uint64_t int_moderator_id = sqlite3_column_int64(censors_cmp_statement, 1);
-        const char* str_moderator_id = sqlite3_column_text(censors_cmp_statement, 1);
+        const unsigned char* str_moderator_id = sqlite3_column_text(censors_cmp_statement, 1);
         const uint64_t end_date_i = sqlite3_column_int64(censors_cmp_statement, 3);
-        const char* reason = sqlite3_column_text(censors_cmp_statement, 4);
+        const unsigned char* reason = sqlite3_column_text(censors_cmp_statement, 4);
 
         char start_date[32];
         struct tm* start_date_t = localtime(&start_date_i);
