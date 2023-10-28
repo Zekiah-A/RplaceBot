@@ -5,13 +5,12 @@ set(CMAKE_C_STANDARD 11)
 
 include_directories(lib)
 
+add_subdirectory(lib/telebot)
+
 add_executable(RplaceBot
         lib/parson.c
         lib/parson.h
         main.c)
 
-target_link_libraries(RplaceBot -lpthread)
-target_link_libraries(RplaceBot -ldiscord)
-target_link_libraries(RplaceBot -lcurl)
-target_link_libraries(RplaceBot -lpng)
-target_link_libraries(RplaceBot -lsqlite3)
+target_link_libraries(RplaceBot PRIVATE telebot)
+target_link_libraries(RplaceBot PRIVATE pthread discord curl png sqlite3)

@@ -1,4 +1,5 @@
 // RplaceBot (c) Zekiah-A - BUILD INSTRUCTIONS:
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <concord/discord.h>
@@ -14,13 +15,14 @@
 #include <signal.h>
 #include <time.h>
 #include "lib/parson.h"
+#include "lib/telebot/include/telebot.h"
 
 struct memory_fetch {
     size_t size;
     uint8_t* memory;
 };
 
-struct config {
+struct rplace_config {
     struct view_canvas* view_canvases;
     int view_canvases_count;
 
@@ -47,7 +49,7 @@ struct censor* active_censors;
 int active_censors_size = 0;
 int active_censors_capacity = 0;
 
-struct config* rplace_config;
+struct rplace_config* rplace_bot_config;
 
 uint8_t default_palette[32][3] = {
     {109, 0, 26},
@@ -91,6 +93,7 @@ int db_err;
 char* db_err_msg;
 
 struct discord* _discord_client;
+telebot_handler_t _telegram_client;
 int requested_sigint = 0;
 
 void handle_sigint(int signum)
@@ -98,15 +101,14 @@ void handle_sigint(int signum)
     if (requested_sigint)
     {
         printf("\rForce quitting!");
-        exit(1);
+        abort();
     }
-
     if (signum == SIGINT)
     {
+        requested_sigint = 1;
         printf("\nPerforming cleanup. Wait a sec!\n");
         sqlite3_close(bot_db);
         discord_shutdown(_discord_client);
-        requested_sigint = 1;
     }
 }
 
@@ -122,16 +124,16 @@ int check_member_has_mod(struct discord* client, u64snowflake guild_id, u64snowf
     struct discord_ret_guild_member guild_member_ret = {.sync = &guild_member};
     discord_get_guild_member(client, guild_id, member_id, &guild_member_ret);
 
-    if (guild_member.roles == NULL || rplace_config == NULL || rplace_config->mod_roles == NULL)
+    if (guild_member.roles == NULL || rplace_bot_config == NULL || rplace_bot_config->mod_roles == NULL)
     {
         return 0;
     }
 
     for (int i = 0; i < guild_member.roles->size; i++)
     {
-        for (int j = 0; j < rplace_config->mod_roles_count; j++)
+        for (int j = 0; j < rplace_bot_config->mod_roles_count; j++)
         {
-            if (guild_member.roles->array[i] == rplace_config->mod_roles[j])
+            if (guild_member.roles->array[i] == rplace_bot_config->mod_roles[j])
             {
                 return 1;
             }
@@ -514,7 +516,7 @@ void on_purge(struct discord* client, const struct discord_message* event)
     while (step == SQLITE_ROW)
     {
         int message_count = sqlite3_column_int(get_cmp_statement, 1);
-        if ((moderator_hourly_purge += message_count) > rplace_config->max_hourly_mod_purge)
+        if ((moderator_hourly_purge += message_count) > rplace_bot_config->max_hourly_mod_purge)
         {
             if (member != NULL)
             {
@@ -522,9 +524,9 @@ void on_purge(struct discord* client, const struct discord_message* event)
             }
 
             const char* raw_str_purge_cooldown = "Calm down! You can't purge more than %i messages within an hour.";
-            size_t str_purge_cooldown_len = snprintf(NULL, 0, raw_str_purge_cooldown, rplace_config->max_hourly_mod_purge) + 1;
+            size_t str_purge_cooldown_len = snprintf(NULL, 0, raw_str_purge_cooldown, rplace_bot_config->max_hourly_mod_purge) + 1;
             char* str_purge_cooldown = malloc(str_purge_cooldown_len);
-            snprintf(str_purge_cooldown, str_purge_cooldown_len, raw_str_purge_cooldown, rplace_config->max_hourly_mod_purge);
+            snprintf(str_purge_cooldown, str_purge_cooldown_len, raw_str_purge_cooldown, rplace_bot_config->max_hourly_mod_purge);
             
             embed.description = str_purge_cooldown;
             struct discord_create_message params = {
@@ -948,8 +950,8 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     int canvas_height = 0;
 
     // Read parameters from message
-    for (int i = 0; i < rplace_config->mod_roles_count; i++) {
-        struct view_canvas view_canvas = rplace_config->view_canvases[i];
+    for (int i = 0; i < rplace_bot_config->mod_roles_count; i++) {
+        struct view_canvas view_canvas = rplace_bot_config->view_canvases[i];
 
         if (strcmp(arg, view_canvas.name) == 0) {
             canvas_url = view_canvas.http;
@@ -1236,7 +1238,8 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     png_destroy_write_struct(&png_ptr, &info_ptr);
 }
 
-void on_status(struct discord* client, const struct discord_message* event) {
+void on_status(struct discord* client, const struct discord_message* event)
+{
     char* count_state = NULL;
     char* canvas_name = strtok_r(event->content, " ", &count_state);
     char* ws_url = NULL;
@@ -1248,10 +1251,12 @@ void on_status(struct discord* client, const struct discord_message* event) {
         return;
     }
 
-    for (int i = 0; i < rplace_config->mod_roles_count; i++) {
-        struct view_canvas view_canvas = rplace_config->view_canvases[i];
+    for (int i = 0; i < rplace_bot_config->mod_roles_count; i++)
+    {
+        struct view_canvas view_canvas = rplace_bot_config->view_canvases[i];
 
-        if (strcmp(canvas_name, view_canvas.name) == 0) {
+        if (strcmp(canvas_name, view_canvas.name) == 0)
+        {
             ws_url = view_canvas.socket;
             break;
         }
@@ -1369,7 +1374,8 @@ void on_message(struct discord* client, const struct discord_message* event)
     }
 }
 
-void parse_view_canvases(const char* key, JSON_Value* value, struct view_canvas* canvas) {
+void parse_view_canvases(const char* key, JSON_Value* value, struct view_canvas* canvas)
+{
     JSON_Object* obj = json_value_get_object(value);
     canvas->name = strdup(key);
     canvas->socket = strdup(json_object_get_string(obj, "socket"));
@@ -1378,7 +1384,8 @@ void parse_view_canvases(const char* key, JSON_Value* value, struct view_canvas*
     canvas->height = json_object_get_number(obj, "height");
 }
 
-void parse_mod_roles(const char* key, JSON_Value* value, u64snowflake** roles, int* count) {
+void parse_mod_roles(const char* key, JSON_Value* value, u64snowflake** roles, int* count)
+{
     JSON_Array* arr = json_value_get_array(value);
     *count = json_array_get_count(arr);
     *roles = (u64snowflake*) malloc(*count * sizeof(u64snowflake));
@@ -1398,7 +1405,8 @@ void parse_mod_roles(const char* key, JSON_Value* value, u64snowflake** roles, i
     }
 }
 
-void process_config_json(const char* json_string, struct config* config) {
+void process_rplace_config_json(const char* json_string, struct rplace_config* config)
+{
     JSON_Value* root = json_parse_string(json_string);
     JSON_Object* root_obj = json_value_get_object(root);
     JSON_Value* mod_roles_value = json_object_get_value(root_obj, "mod_roles");
@@ -1421,6 +1429,38 @@ void process_config_json(const char* json_string, struct config* config) {
     json_value_free(root);
 }
 
+telebot_handler_t process_telegram_config_json(const char* json_string)
+{
+    JSON_Value* root = json_parse_string(json_string);
+    JSON_Object* root_obj = json_value_get_object(root);
+    JSON_Object* telegram_obj = json_object_get_object(root_obj, "telegram");
+    if (telegram_obj == NULL)
+    {
+        return NULL;
+    }
+
+    JSON_Value* telegram_token_value = json_object_get_value(telegram_obj, "token");
+    const char* telegram_token_const = json_value_get_string(telegram_token_value);
+    char* telegram_token = strcpy(malloc(strlen(telegram_token_const) + 1), telegram_token_const);
+    telebot_handler_t handle = NULL;
+    if (telebot_create(&handle, telegram_token) != TELEBOT_ERROR_NONE)
+    {
+        free(telegram_token);
+        return NULL;
+    }
+
+    free(telegram_token);
+    return handle;
+}
+
+long get_file_length(FILE* file)
+{
+    fseek(file, 0L, SEEK_END);
+    long file_size = ftell(file);
+    fseek(file, 0L, SEEK_SET);
+    return file_size;
+}
+
 int main(int argc, char* argv[])
 {
     const char* config_file = "config.json";
@@ -1428,31 +1468,50 @@ int main(int argc, char* argv[])
     ccord_global_init();
     struct discord* client = discord_config_init(config_file);
 
+    FILE* telegram_config_file = fopen(config_file, "rb");
+    if (telegram_config_file == NULL)
+    {
+        fprintf(stderr, "[CRITICAL] Could not bot config. File was inacessible?.\n");
+        return 1;
+    }
+
+    long telegram_config_size = get_file_length(telegram_config_file);
+    char* telegram_config_text = malloc(telegram_config_size + 1);
+    fread(telegram_config_text, telegram_config_size, 1, telegram_config_file);
+    telegram_config_text[telegram_config_size] = '\0';
+    _telegram_client = process_telegram_config_json(telegram_config_text);
+    free(telegram_config_text);
+    free(telegram_config_file);
+
+    if (_telegram_client != NULL)
+    {
+        telebot_user_t me;
+        /*if (telebot_get_me(_telegram_client, &me) != TELEBOT_ERROR_NONE)
+        {
+            log_error("Couldn't initialise telegram bot. Failed to get bot information. Bot will be disabled");
+            telebot_destroy(_telegram_client);
+            _telegram_client = NULL;
+        }
+        else
+        {
+            log_info("Telegram bot sucessfully connected as %s#%s", me.username, me.id);
+        }*/
+    }
+
     FILE* rplace_config_file = fopen("rplace_bot.json", "rb");
     if (rplace_config_file == NULL)
     {
-        fprintf(stderr, "[CRITICAL] Could not read rplace config. FIle does not exist?.\n");
+        fprintf(stderr, "[CRITICAL] Could not read rplace config. File does not exist?.\n");
         return 1;
     }
 
-    fseek(rplace_config_file, 0L, SEEK_END);
-    long rplace_config_size = ftell(rplace_config_file);
-    fseek(rplace_config_file, 0L, SEEK_SET);
-
+    long rplace_config_size = get_file_length(rplace_config_file);
     char* rplace_config_text = malloc(rplace_config_size + 1);
-    if (!rplace_config_text)
-    {
-        fclose(rplace_config_file);
-        fprintf(stderr, "[CRITICAL] Could not read rplace bot config. File was empty?.\n");
-        return 1;
-    }
-
     fread(rplace_config_text, rplace_config_size, 1, rplace_config_file);
     rplace_config_text[rplace_config_size] = '\0';
 
-
-    rplace_config = calloc(1, sizeof(struct config));
-    process_config_json(rplace_config_text, rplace_config);
+    rplace_bot_config = calloc(1, sizeof(struct rplace_config));
+    process_rplace_config_json(rplace_config_text, rplace_bot_config);
 
     free(rplace_config_text);
     fclose(rplace_config_file);

@@ -56,7 +56,8 @@ Mkfile.old
 dkms.conf
 
 # Cmake
-cmake-build-debug
+cmake-build-debug/
+build/
 
 # Project specific
 config.json

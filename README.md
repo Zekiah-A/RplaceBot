@@ -23,6 +23,10 @@ Create a config.json that looks like the following
             "enable": true,
             "prefix": "r/"
         }
+    },
+    // OPTIONAL:
+    "telegram": {
+        "token": "YOUR TELEGRAM BOT TOKEN GOES HERE"
     }
 }
 ```
@@ -63,6 +67,7 @@ error messages. To check if your cURL has support, run curl --version and check 
 on UNIX look at https://github.com/curl/curl/blob/master/GIT-INFO to compile the latest sources. Make sure to include the required
 features while configuring (`./configure --with-openssl --enable-websockets`)
  - This project can be debugged with flags `-Wall -Wextra -Wno-unused-parameter` / `-g -fsanitize=address` and gdb.
+ - The project can be build by running `mkdir build`, `cd build`, `cmake ..` and `make` in order within the base project directory.
 
 ## Notes:
  - The parameter mod_roles in rplace_bot.json must be an array of strings due to parsing library limitations.
