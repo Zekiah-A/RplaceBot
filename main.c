@@ -1,10 +1,4 @@
 // RplaceBot (c) Zekiah-A - BUILD INSTRUCTIONS:
-// You will have to install concord separately unfortunately as the library itself
-// does not implement a cmakelists.txt to be compiled alongside this project as a gitmodule
-// You will also have to self compile CURL with websocket support if you receive 'curl_easy_perform() failed: Unsupported protocol'
-// error messages. To check if your cURL has support, run curl --version and check for ws/wss protocols present.
-// This project can be compiled easily with gcc main.c lib/parson.c lib/parson.h -o RplaceBot -pthread -ldiscord -lcurl -lpng -lsqlite3
-// This project can be debugged with flags -Wall -Wextra -Wno-unused-parameter / -g -fsanitize=address
 #include <stdio.h>
 #include <stdlib.h>
 #include <concord/discord.h>

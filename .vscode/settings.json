@@ -1,0 +1,31 @@
+{
+    "files.associations": {
+        "pthread.h": "c",
+        "regex.h": "c",
+        "discord.h": "c",
+        "chrono": "c",
+        "typeindex": "c",
+        "typeinfo": "c",
+        "stdint.h": "c",
+        "alloca.h": "c",
+        "string.h": "c",
+        "param.h": "c",
+        "png.h": "c",
+        "curl.h": "c",
+        "stdio.h": "c",
+        "stdlib.h": "c",
+        "log.h": "c",
+        "array": "c",
+        "hash_map": "c",
+        "bitset": "c",
+        "string_view": "c",
+        "format": "c",
+        "initializer_list": "c",
+        "span": "c",
+        "signal.h": "c",
+        "*.rh": "c",
+        "sstream": "c",
+        "cstdlib": "c"
+    },
+    "cmake.configureOnOpen": true
+}

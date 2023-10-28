@@ -55,16 +55,13 @@ Create rplace_bot.json for bot-specific functionality like the following
 }
 ```
 ## Build instructions:
+ - The library, telebot, for telegram bot support is included with the sources and depends on `libcurl4-openssl-dev` (ubuntu), `libcurl-openssl-1.0` (arch) and `libjson-c-dev` (ubuntu), `json-c 0` (arch).
  - You will have to install concord separately unfortunately as the library itself
 does not implement a cmakelists.txt to be compiled alongside this project as a gitmodule
-
  - You will also have to self compile CURL with websocket support if you receive 'curl_easy_perform() failed: Unsupported protocol'
 error messages. To check if your cURL has support, run curl --version and check for ws/wss protocols present. To self compile CURL
 on UNIX look at https://github.com/curl/curl/blob/master/GIT-INFO to compile the latest sources. Make sure to include the required
 features while configuring (`./configure --with-openssl --enable-websockets`)
-
- - This project can be compiled easily with `gcc main.c lib/parson.c lib/parson.h -o RplaceBot -pthread -ldiscord -lcurl -lpng -lsqlite3 -Wall -Wextra -Wno-unused-parameter` and ran with ./RplaceBot.
-
  - This project can be debugged with flags `-Wall -Wextra -Wno-unused-parameter` / `-g -fsanitize=address` and gdb.
 
 ## Notes:
