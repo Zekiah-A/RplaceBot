@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.27)
 project(RplaceBot C)
 
-set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD 23)
+
+set(CMAKE_BUILD_TYPE RelWithDebInfo)
 
 include_directories(lib)
 

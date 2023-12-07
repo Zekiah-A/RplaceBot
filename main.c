@@ -1,5 +1,6 @@
 // RplaceBot (c) Zekiah-A - BUILD INSTRUCTIONS:
-#include <assert.h>
+#include <bits/types/siginfo_t.h>
+#include <concord/discord_codecs.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <concord/discord.h>
@@ -43,6 +44,18 @@ struct view_canvas {
 struct censor {
     u64snowflake member_id;
     time_t end_date;
+};
+
+struct parsed_timescale {
+    int period_s;
+    const char* period_unit;
+    int period_original;
+};
+
+struct period_timer_info {
+    timer_t* timer_id;
+    char* canvas_url;
+    struct discord_channel* channel;
 };
 
 struct censor* active_censors;
@@ -118,6 +131,52 @@ void on_ready(struct discord* client, const struct discord_ready* event)
              event->user->username, event->user->discriminator);
 }
 
+struct parsed_timescale parse_timescale(char* arg) {
+    // We assume it is in seconds naturally
+    int period_multiplier = 1;
+    int period_original = 0;
+    char* period_unit = "seconds"; 
+    int period_len = strlen(arg);
+
+    if (arg[period_len - 1] == 'm')
+    {
+        period_multiplier = 60;
+        period_unit = "minutes";
+    }
+    else if (arg[period_len - 1] == 'h')
+    {
+        period_multiplier = 3600;
+        period_unit = "hours";
+    }
+    else if (arg[period_len - 1] == 'd')
+    {
+        period_multiplier = 86400;
+        period_unit = "days";
+    }
+    arg[period_len - 1] = '\0';
+    period_original = atoi(arg);
+    int period_s = period_original * period_multiplier;
+    return (struct parsed_timescale) { period_s, period_unit, period_original };
+}
+
+void send_action_blocked(char* title, struct discord* client, const struct discord_message* event)
+{
+    struct discord_embed embed = {
+        .title = title,
+        .color = 0xFF4500,
+        .footer = &(struct discord_embed_footer) {
+            .text = "https://rplace.live, bot by Zekiah-A",
+            .icon_url = "https://github.com/rslashplace2/rslashplace2.github.io/raw/main/favicon.png"}};
+
+    embed.description = "Sorry. You need moderator or higher permissions to be able to use this command!";
+    embed.image = &(struct discord_embed_image) {
+        .url = "https://media.tenor.com/qmSIzc-H7vIAAAAC/1984.gif" };
+
+    struct discord_create_message params = {
+        .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+    discord_create_message(client, event->channel_id, &params, NULL);
+}
+
 int check_member_has_mod(struct discord* client, u64snowflake guild_id, u64snowflake member_id)
 {
     struct discord_guild_member guild_member = { .roles = NULL };
@@ -141,6 +200,47 @@ int check_member_has_mod(struct discord* client, u64snowflake guild_id, u64snowf
     }
 
     return 0;
+}
+
+// Returns NULL if invalid channel
+struct discord_channel* resolve_channel_mention(struct discord* client, const char* mention_string)
+{
+    int str_id_len = strlen(mention_string);
+    char* str_id = NULL;
+
+    // There should never be a member id this small in theory, but whatever
+    if (str_id_len > 3 && mention_string[0] == '<' && mention_string[1] == '#')
+    {
+        int member_id_len = str_id_len - 3;
+        str_id = malloc(member_id_len + 1);
+        memcpy(str_id, mention_string + 2, member_id_len);
+        str_id[member_id_len] = '\0';
+    }
+    else if (str_id_len > 0)
+    {
+        str_id = strdup(mention_string);
+    }
+    else
+    {
+        return NULL;
+    }
+
+    u64snowflake channel_id = strtoull(str_id, NULL, 10);
+    free(str_id);
+
+    if (channel_id == 0)
+    {
+        return NULL;
+    }
+
+    struct discord_channel* channel = malloc(sizeof(struct discord_channel));
+    struct discord_ret_channel ret_channel = { .sync = channel };
+    if (discord_get_channel(client, channel_id, &ret_channel) != CCORD_OK)
+    {
+        return NULL;
+    }
+
+    return channel;
 }
 
 // Returns NULL if invalid user
@@ -199,6 +299,7 @@ void on_mod_help(struct discord* client, const struct discord_message* event)
     if (check_member_has_mod(client, event->guild_id, event->author->id))
     {
         embed.description = "**r/1984** `member` `period(s|m|h|d)` `reason`\nHide all the messages a user sends for a given period of time\n\n"
+            "**r/archive** `canvas1/...` `channel` `period(m|h)` \n*Automatically send image backups of the the given board at a specified interval*\n\n"
             "**r/purge** `message count` `member (optional)`\nClear 'n' message history of a user, or of a channel (if no member_id, max: 100 messages per 2 hours)\n\n"
             "**r/modhistory**\nDisplay a history of all actively and past used moderation commands\n\n";
     }
@@ -237,23 +338,9 @@ void add_active_censor(u64snowflake member_id, time_t censor_end)
 
 void on_1984(struct discord* client, const struct discord_message* event)
 {
-    struct discord_embed embed = {
-        .title = "Moderation action - 1984 user",
-        .color = 0xFF4500,
-        .footer = &(struct discord_embed_footer) {
-            .text = "https://rplace.live, bot by Zekiah-A",
-            .icon_url = "https://github.com/rslashplace2/rslashplace2.github.io/raw/main/favicon.png"}};
-
-
     if (!check_member_has_mod(client, event->guild_id, event->author->id))
     {
-        embed.description = "Sorry. You need moderator or higher permissions to be able to use this command!";
-        embed.image = &(struct discord_embed_image) {
-            .url = "https://media.tenor.com/qmSIzc-H7vIAAAAC/1984.gif" };
-
-        struct discord_create_message params = {
-            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
-        discord_create_message(client, event->channel_id, &params, NULL);
+        send_action_blocked("Moderation action - 1984 user", client, event);
         return;
     }
 
@@ -268,9 +355,8 @@ void on_1984(struct discord* client, const struct discord_message* event)
     struct discord_user* member = resolve_user_mention(client, arg);
     if (member == NULL)
     {
-        embed.description = "Sorry. Can't find the user that you are trying to 1984. ¯\\_(ツ)_/¯";
-        struct discord_create_message params = {
-            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        struct discord_create_message params = { .content = 
+            "Sorry. Can't find the user that you are trying to 1984. ¯\\_(ツ)_/¯" };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
@@ -278,9 +364,8 @@ void on_1984(struct discord* client, const struct discord_message* event)
     if (check_member_has_mod(client, event->guild_id, member->id))
     {
         free(member);
-        embed.description = "Sorry. You can not 1984 another moderator!";
-        struct discord_create_message params = {
-            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        struct discord_create_message params = { .content = 
+            "Sorry. You can not 1984 another moderator!" };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
@@ -292,46 +377,21 @@ void on_1984(struct discord* client, const struct discord_message* event)
         on_mod_help(client, event);
         return;
     }
+    struct parsed_timescale timescale = parse_timescale(arg);
 
-    // We assume it is in seconds naturally
-    int period_multiplier = 1;
-    int period_original = 0;
-    char* period_unit = "seconds"; 
-    int period_len = strlen(arg);
-
-    if (arg[period_len - 1] == 'm')
-    {
-        period_multiplier = 60;
-        period_unit = "minutes";
-    }
-    else if (arg[period_len - 1] == 'h')
-    {
-        period_multiplier = 3600;
-        period_unit = "hours";
-    }
-    else if (arg[period_len - 1] == 'd')
-    {
-        period_multiplier = 86400;
-        period_unit = "days";
-    }
-    arg[period_len - 1] = '\0';
-    period_original = atoi(arg);
-    int period_s = period_original * period_multiplier;
-    if (period_s > 31540000) // 365 days
+    if (timescale.period_s > 31540000) // 365 days
     {
         free(member);
-        embed.description = "Sorry. That 1984 is too massive! (Maximum 365 days).";
-        struct discord_create_message params = {
-            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        struct discord_create_message params = { .content = 
+            "Sorry. That 1984 is too massive! (Maximum 365 days)." };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
-    else if (period_s <= 0)
+    else if (timescale.period_s <= 0)
     {
         free(member);
-        embed.description = "You can't 1984 for that period of time? (Minimum 1 second).";
-        struct discord_create_message params = {
-            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        struct discord_create_message params = { .content = 
+            "You can't 1984 for that period of time? (Minimum 1 second)." };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
@@ -350,9 +410,8 @@ void on_1984(struct discord* client, const struct discord_message* event)
         free(member);
         fprintf(stderr, "Could not prepare existing censor: %s\n", sqlite3_errmsg(bot_db));
         
-        embed.description = "Failed to 1984 user. Internal bot error occured :skull:";
-        struct discord_create_message params = {
-            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        struct discord_create_message params = { .content = 
+            "Failed to 1984 user. Internal bot error occured :skull:" };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
@@ -370,9 +429,8 @@ void on_1984(struct discord* client, const struct discord_message* event)
             fprintf(stderr, "Could not remove existing censor: %s\n", db_err_msg);
             sqlite3_free(db_err_msg);
 
-            embed.description = "Failed to 1984 user. Internal bot error occured :skull:";
-            struct discord_create_message params = {
-                .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+            struct discord_create_message params = { .content = 
+                "Failed to 1984 user. Internal bot error occured :skull:" };
             discord_create_message(client, event->channel_id, &params, NULL);
             return;
         }
@@ -388,7 +446,7 @@ void on_1984(struct discord* client, const struct discord_message* event)
         sqlite3_bind_int64(insert_cmp_statement, 1, member->id);
         sqlite3_bind_int64(insert_cmp_statement, 2, event->author->id);
         sqlite3_bind_int64(insert_cmp_statement, 3, current_time);
-        sqlite3_bind_int64(insert_cmp_statement, 4, current_time + period_s);
+        sqlite3_bind_int64(insert_cmp_statement, 4, current_time + timescale.period_s);
         sqlite3_bind_text(insert_cmp_statement, 5, reason, -1, SQLITE_TRANSIENT);
 
         if (sqlite3_step(insert_cmp_statement) != SQLITE_DONE)
@@ -396,9 +454,8 @@ void on_1984(struct discord* client, const struct discord_message* event)
             free(member);
             fprintf(stderr, "Could not insert censor: %s\n", sqlite3_errmsg(bot_db));
             
-            embed.description = "Failed to 1984 user. Internal bot error occured :skull:";
-            struct discord_create_message params = {
-                .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+            struct discord_create_message params = { .content = 
+                "Failed to 1984 user. Internal bot error occured :skull:" };
             discord_create_message(client, event->channel_id, &params, NULL);
             return;
         }
@@ -410,22 +467,20 @@ void on_1984(struct discord* client, const struct discord_message* event)
         free(member);
         fprintf(stderr, "Could not prepare insert censor: %s\n", sqlite3_errmsg(bot_db));
         
-        embed.description = "Failed to 1984 user. Internal bot error occured :skull:";
-        struct discord_create_message params = {
-            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        struct discord_create_message params = { .content = 
+            "Failed to 1984 user. Internal bot error occured :skull:" };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
-    add_active_censor(member->id, current_time + period_s);
+    add_active_censor(member->id, current_time + timescale.period_s);
     
     const char* raw_str_1984 = "Successfully 1984ed user **%s** for **%d %s** (reason: **%s**).";
-    size_t str_1984_len = snprintf(NULL, 0, raw_str_1984, member->username, period_original, period_unit, reason) + 1;
+    size_t str_1984_len = snprintf(NULL, 0, raw_str_1984, member->username, timescale.period_original, timescale.period_unit, reason) + 1;
     char* str_1984 = malloc(str_1984_len);
-    snprintf(str_1984, str_1984_len, raw_str_1984, member->username, period_original, period_unit, reason);
-    embed.description = str_1984;
-
-    struct discord_create_message params = {
-        .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+    snprintf(str_1984, str_1984_len, raw_str_1984, member->username, timescale.period_original, timescale.period_unit, reason);
+    
+    struct discord_create_message params = { .content = 
+        str_1984 };
     discord_create_message(client, event->channel_id, &params, NULL);
 
     free(reason);
@@ -434,23 +489,9 @@ void on_1984(struct discord* client, const struct discord_message* event)
 
 void on_purge(struct discord* client, const struct discord_message* event)
 {
-    struct discord_embed embed = {
-        .title = "Moderation action - Purge user",
-        .color = 0xFF4500,
-        .footer = &(struct discord_embed_footer) {
-            .text = "https://rplace.live, bot by Zekiah-A",
-            .icon_url = "https://github.com/rslashplace2/rslashplace2.github.io/raw/main/favicon.png"}};
-
-
     if (!check_member_has_mod(client, event->guild_id, event->author->id))
     {
-        embed.description = "Sorry. You need moderator or higher permissions to be able to use this command!";
-        embed.image = &(struct discord_embed_image) {
-            .url = "https://media.tenor.com/qmSIzc-H7vIAAAAC/1984.gif" };
-
-        struct discord_create_message params = {
-            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
-        discord_create_message(client, event->channel_id, &params, NULL);
+        send_action_blocked("Moderation action - Purge messages", client, event);
         return;
     }
 
@@ -465,9 +506,8 @@ void on_purge(struct discord* client, const struct discord_message* event)
     int count = atoi(arg);
     if (count < 1)
     {
-        embed.description = "Sorry. You can't purge less than one message!";
-        struct discord_create_message params = {
-            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        struct discord_create_message params = { .content =
+            "Sorry. You can't purge less than one message!" };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
@@ -480,9 +520,8 @@ void on_purge(struct discord* client, const struct discord_message* event)
         member = resolve_user_mention(client, arg);
         if (member == NULL)
         {
-            embed.description = "Sorry. Can't find the user that you are trying to purge. (-_- )";
-            struct discord_create_message params = {
-                .embeds = &(struct discord_embeds){ .size = 1, .array = &embed }};
+            struct discord_create_message params = { .content =
+                "Sorry. Can't find the user that you are trying to purge. (-_- )" };
             discord_create_message(client, event->channel_id, &params, NULL);
             return;
         }
@@ -500,9 +539,8 @@ void on_purge(struct discord* client, const struct discord_message* event)
         }
         fprintf(stderr, "Could not prepare get rate limit purges: %s\n", sqlite3_errmsg(bot_db));
 
-        embed.description = "Failed to purge messages. An internal bot error occured :skull:";
-        struct discord_create_message params = {
-            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        struct discord_create_message params = { .content =
+            "Failed to purge messages. An internal bot error occured :skull:" };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
@@ -528,9 +566,7 @@ void on_purge(struct discord* client, const struct discord_message* event)
             char* str_purge_cooldown = malloc(str_purge_cooldown_len);
             snprintf(str_purge_cooldown, str_purge_cooldown_len, raw_str_purge_cooldown, rplace_bot_config->max_hourly_mod_purge);
             
-            embed.description = str_purge_cooldown;
-            struct discord_create_message params = {
-                .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+            struct discord_create_message params = { .content = str_purge_cooldown };
             discord_create_message(client, event->channel_id, &params, NULL);
             return;
         }
@@ -546,9 +582,8 @@ void on_purge(struct discord* client, const struct discord_message* event)
         }
         fprintf(stderr, "Could not get purges history: %s\n", sqlite3_errmsg(bot_db));
 
-        embed.description = "Failed to purge messages. An internal bot error occured :skull:";
-        struct discord_create_message params = {
-            .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+        struct discord_create_message params = { .content = 
+            "Failed to purge messages. An internal bot error occured :skull:" };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
@@ -571,9 +606,8 @@ void on_purge(struct discord* client, const struct discord_message* event)
         {
             fprintf(stderr, "Could not get purge guild channel messages: %s\n", sqlite3_errmsg(bot_db));
             
-            embed.description = "Failed to purge user messages. Internal bot error occured :skull:";
-            struct discord_create_message params = {
-                .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+            struct discord_create_message params = { .content = 
+                "Failed to purge user messages. Internal bot error occured :skull:" };
             discord_create_message(client, event->channel_id, &params, NULL);
             return;
         }
@@ -598,9 +632,8 @@ void on_purge(struct discord* client, const struct discord_message* event)
             free(member);
             fprintf(stderr, "Could not get purge guild channels: %s\n", sqlite3_errmsg(bot_db));
 
-            embed.description = "Failed to purge messages. Internal bot error occured :skull:";
-            struct discord_create_message params = {
-                .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+            struct discord_create_message params = { .content = 
+                "Failed to purge messages. Internal bot error occured :skull:" };
             discord_create_message(client, event->channel_id, &params, NULL);
             return;
         }
@@ -698,22 +731,9 @@ void ensure_tables_capacity(char** tables, int* tables_used, int* tables_len, in
 
 void on_mod_history(struct discord* client, const struct discord_message* event)
 {
-    struct discord_embed embed = {
-    .title = "Moderation action - View history",
-    .color = 0xFF4500,
-    .footer = &(struct discord_embed_footer) {
-        .text = "https://rplace.live, bot by Zekiah-A",
-        .icon_url = "https://github.com/rslashplace2/rslashplace2.github.io/raw/main/favicon.png"}};
-
     if (!check_member_has_mod(client, event->guild_id, event->author->id))
     {
-        embed.description = "Sorry. You need moderator or higher permissions to be able to use this command!";
-        embed.image = &(struct discord_embed_image) {
-            .url = "https://media.tenor.com/qmSIzc-H7vIAAAAC/1984.gif" };
-
-        struct discord_create_message params = {
-            .embeds = &(struct discord_embeds) { .size = 1, .array = &embed }};
-        discord_create_message(client, event->channel_id, &params, NULL);
+        send_action_blocked("Moderation action - View history", client, event);
         return;
     }
 
@@ -887,9 +907,8 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
     }
     sqlite3_finalize(purges_cmp_statement);
 
-    embed.description = tables;
-    struct discord_create_message params = {
-        .embeds = &(struct discord_embeds){.size = 1, .array = &embed}};
+    struct discord_create_message params = { .content = 
+        tables };
     discord_create_message(client, event->channel_id, &params, NULL);
 }
 
@@ -1238,6 +1257,138 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     png_destroy_write_struct(&png_ptr, &info_ptr);
 }
 
+// Allows the bot user to define a channel wherein the bot shall send periodic archives to
+// this method is called on an interval specified by end user
+void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* data)
+{
+
+}
+
+void create_periodic_archive(char* canvas_url, struct discord_channel* channel)
+{
+    // Signal handler
+    struct sigaction sa = {
+        .sa_flags = SA_SIGINFO,
+        .sa_sigaction = &send_periodic_archive,
+    };
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGRTMIN, &sa, NULL);
+
+    // Set up timer
+    // canvas_url : timer id
+    timer_t timer_id;
+    struct period_timer_info handler_info = {
+        .timer_id = &timer_id,
+        .canvas_url = canvas_url,
+        .channel = channel
+    };
+    struct sigevent sev = {
+        .sigev_notify = SIGEV_SIGNAL,
+        .sigev_signo = SIGRTMIN,
+        .sigev_value.sival_ptr = &handler_info
+    };
+    timer_create(CLOCK_REALTIME, &sev, &timer_id);
+
+    // Interval
+    struct itimerspec its = {
+        .it_interval = { .tv_sec = 1800 }
+    };
+    timer_settime(timer_id, 0, &its, NULL);  
+}
+
+void on_archive(struct discord* client, const struct discord_message* event)
+{
+    if (!check_member_has_mod(client, event->guild_id, event->author->id))
+    {
+        send_action_blocked("Moderation action - Automatic canvas archives", client, event);
+        return;
+    }
+
+    char* count_state = NULL;
+    char* arg = strtok_r(event->content, " ", &count_state);
+
+    arg = strtok_r(NULL, " ", &count_state);
+    char* canvas_name = arg;
+    char* canvas_url = NULL;
+    for (int i = 0; i < rplace_bot_config->mod_roles_count; i++)
+    {
+        struct view_canvas view_canvas = rplace_bot_config->view_canvases[i];
+
+        if (strcmp(canvas_name, view_canvas.name) == 0)
+        {
+            canvas_url = view_canvas.socket;
+            break;
+        }
+    }
+    if (canvas_url == NULL)
+    {
+        // inbuilt_canvas = 0;
+        struct discord_create_message params = {.content =
+            "At the moment, custom canvases URLs are not supported." };
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+
+    if (arg == NULL)
+    {
+        on_mod_help(client, event);
+        return;
+    }
+    struct discord_channel* channel = resolve_channel_mention(client, arg);
+    if (channel == NULL)
+    {
+        struct discord_create_message params = { .content =
+            "Could not create automatic canvas archives. Specified channel could not be found." };
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+
+    // Resolve channel
+    arg = strtok_r(NULL, " ", &count_state);
+    struct parsed_timescale timescale = parse_timescale(arg);
+    if (timescale.period_s < 300 || timescale.period_s > 172800)
+    {
+        const char* warning_template = "Sorry. Canvas archive periods must be between **5 minutes** and **2 days**, "
+            "but you specified %i %s. Please try again.";
+        int warning_len = snprintf(NULL, 0, warning_template, timescale.period_original, timescale.period_unit) + 1;
+        char* warning = malloc(warning_len);
+        snprintf(warning, warning_len, warning_template, timescale.period_original, timescale.period_unit);
+        struct discord_create_message params = { .content = warning };
+        discord_create_message(client, event->channel_id, &params, NULL);
+    }
+
+    const char* query_inset_purge = "INSERT INTO PeriodicArchives (channel_id, period_s, board_url) VALUES (?, ?, ?)";
+    sqlite3_stmt* insert_cmp_statement;
+
+    if (sqlite3_prepare_v2(bot_db, query_inset_purge, -1, &insert_cmp_statement, NULL) != SQLITE_OK)
+    {
+        fprintf(stderr, "Could not prepare insert periodic archive: %s\n", sqlite3_errmsg(bot_db));
+        struct discord_create_message params = { .content =
+            "Could not create automatic canvas archives. Internal bot error occurred :skull:" };
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+
+    sqlite3_bind_int64(insert_cmp_statement, 1, channel->id);   
+    sqlite3_bind_int(insert_cmp_statement, 2, timescale.period_s);
+    sqlite3_bind_text(insert_cmp_statement, 3, canvas_url, -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(insert_cmp_statement) != SQLITE_DONE)
+    {
+        fprintf(stderr, "Could not insert periodic archive: %s\n", sqlite3_errmsg(bot_db));
+        struct discord_create_message params = { .content =
+            "Could not create automatic canvas archives. Internal bot error occurred :skull:" };
+        discord_create_message(client, event->channel_id, &params, NULL);
+        return;
+    }
+
+    // TODO: Call method to init period timer
+
+    struct discord_create_message params = { .content =
+        "Sucessfully created archive in channel" };
+    discord_create_message(client, event->channel_id, &params, NULL);
+}
+
 void on_status(struct discord* client, const struct discord_message* event)
 {
     char* count_state = NULL;
@@ -1449,7 +1600,7 @@ telebot_handler_t process_telegram_config_json(const char* json_string)
         return NULL;
     }
 
-    free(telegram_token);
+    //free(telegram_token);
     return handle;
 }
 
@@ -1486,7 +1637,7 @@ int main(int argc, char* argv[])
     if (_telegram_client != NULL)
     {
         telebot_user_t me;
-        /*if (telebot_get_me(_telegram_client, &me) != TELEBOT_ERROR_NONE)
+        if (telebot_get_me(_telegram_client, &me) != TELEBOT_ERROR_NONE)
         {
             log_error("Couldn't initialise telegram bot. Failed to get bot information. Bot will be disabled");
             telebot_destroy(_telegram_client);
@@ -1495,7 +1646,7 @@ int main(int argc, char* argv[])
         else
         {
             log_info("Telegram bot sucessfully connected as %s#%s", me.username, me.id);
-        }*/
+        }
     }
 
     FILE* rplace_config_file = fopen("rplace_bot.json", "rb");
@@ -1565,6 +1716,17 @@ int main(int argc, char* argv[])
         sqlite3_free(db_err_msg);
     }
 
+    db_err = sqlite3_exec(bot_db, "CREATE TABLE IF NOT EXISTS PeriodicArchives ( \
+            channel_id INTEGER, \
+            period_s INTEGER, \
+            board_url TEXT \
+        )", NULL, NULL, &db_err_msg);
+    if (db_err != SQLITE_OK)
+    {
+        fprintf(stderr, "SQL error: Could not create PeriodicArchives table: %s\n", db_err_msg);
+        sqlite3_free(db_err_msg);
+    }
+
     // Load all applicable current active from censors history into memory
     const char* query_get_active_censors = "SELECT member_id, censor_end FROM CensorsHistory WHERE censor_end > ?";
     sqlite3_stmt* get_cmp_statement;
@@ -1595,6 +1757,7 @@ int main(int argc, char* argv[])
     discord_set_on_command(client, "view", &on_canvas_mention);
     discord_set_on_command(client, "help", &on_help);
     discord_set_on_command(client, "status", &on_status);
+    discord_set_on_command(client, "archive", &on_archive);
     discord_set_on_command(client, "modhelp", &on_mod_help);
     discord_set_on_command(client, "modhistory", &on_mod_history);
     discord_set_on_command(client, "1984", &on_1984);
