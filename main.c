@@ -971,10 +971,12 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     int canvas_height = 0;
 
     // Read parameters from message
-    for (int i = 0; i < rplace_bot_config->mod_roles_count; i++) {
+    for (int i = 0; i < rplace_bot_config->view_canvases_count; i++)
+    {
         struct view_canvas view_canvas = rplace_bot_config->view_canvases[i];
 
-        if (strcmp(arg, view_canvas.name) == 0) {
+        if (strcmp(arg, view_canvas.name) == 0)
+        {
             canvas_url = view_canvas.http;
             canvas_width = view_canvas.width;
             canvas_height = view_canvas.height;
@@ -1308,22 +1310,21 @@ void on_archive(struct discord* client, const struct discord_message* event)
 
     char* count_state = NULL;
     char* arg = strtok_r(event->content, " ", &count_state);
-
-    arg = strtok_r(NULL, " ", &count_state);
+    
     char* canvas_name = arg;
     if (canvas_name == NULL)
     {
         on_mod_help(client, event);
         return;
     }
+
     char* canvas_url = NULL;
-    for (int i = 0; i < rplace_bot_config->mod_roles_count; i++)
+    for (int i = 0; i < rplace_bot_config->view_canvases_count; i++)
     {
         struct view_canvas view_canvas = rplace_bot_config->view_canvases[i];
-
         if (strcmp(canvas_name, view_canvas.name) == 0)
         {
-            canvas_url = view_canvas.socket;
+            canvas_url = view_canvas.http;
             break;
         }
     }
@@ -1331,7 +1332,7 @@ void on_archive(struct discord* client, const struct discord_message* event)
     {
         // inbuilt_canvas = 0;
         struct discord_create_message params = {.content =
-            "At the moment, custom canvases URLs are not supported." };
+            "Sorry. At the moment, custom canvases URLs are not supported." };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
@@ -1404,7 +1405,7 @@ void on_status(struct discord* client, const struct discord_message* event)
         return;
     }
 
-    for (int i = 0; i < rplace_bot_config->mod_roles_count; i++)
+    for (int i = 0; i < rplace_bot_config->view_canvases_count; i++)
     {
         struct view_canvas view_canvas = rplace_bot_config->view_canvases[i];
 
