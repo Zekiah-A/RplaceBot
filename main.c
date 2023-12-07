@@ -17,6 +17,7 @@
 #include <time.h>
 #include "lib/parson.h"
 #include "lib/telebot/include/telebot.h"
+#include <errno.h>
 
 struct memory_fetch {
     size_t size;
@@ -107,6 +108,7 @@ char* db_err_msg;
 
 struct discord* _discord_client;
 telebot_handler_t _telegram_client;
+pthread_t telegram_bot_thread;
 int requested_sigint = 0;
 
 void handle_sigint(int signum)
@@ -1525,6 +1527,74 @@ void on_message(struct discord* client, const struct discord_message* event)
     }
 }
 
+int msleep(unsigned long milliseconds)
+{
+    struct timespec time_span;
+
+    if (milliseconds < 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    time_span.tv_sec = milliseconds / 1000;
+    time_span.tv_nsec = (milliseconds % 1000) * 1000000;
+
+    int result;
+    do
+    {
+        result = nanosleep(&time_span, &time_span);
+    } while (result == -1 && errno == EINTR);
+
+    return result;
+}
+
+// TODO: Inject telebot handle into this method instead of using global object
+void telegram_listen_message(void* data)
+{
+    int index = 0;
+    int count = 0;
+    int offset = -1;
+    telebot_error_e telebot_error;
+    telebot_message_t message;
+    telebot_update_type_e update_types[] = { TELEBOT_UPDATE_TYPE_MESSAGE };
+
+    // Runs on a tick system. We will query every 300ms
+    while (1)
+    {
+        telebot_update_t* updates;
+        telebot_error = telebot_get_updates(_telegram_client, offset, 20, 0, update_types, 0, &updates, &count);
+        if (telebot_error != TELEBOT_ERROR_NONE)
+        {
+            continue;
+        }
+
+        for (index = 0; index < count; index++)
+        {
+            message = updates[index].message;
+            if (message.text)
+            {
+                if (strstr(message.text, "/view"))
+                {
+                    // TODO: Implement view command
+                }
+
+                if (telebot_error != TELEBOT_ERROR_NONE)
+                {
+                    fprintf(stderr, "Failed to send telegram message: %d \n", telebot_error);
+                }
+            }
+
+            offset = updates[index].update_id + 1;
+        }
+
+        telebot_put_updates(updates, count);
+        msleep(300);
+    }
+
+    telebot_destroy(_telegram_client);
+}
+
 void parse_view_canvases(const char* key, JSON_Value* value, struct view_canvas* canvas)
 {
     JSON_Object* obj = json_value_get_object(value);
@@ -1645,14 +1715,20 @@ int main(int argc, char* argv[])
         }
         else
         {
-            log_info("Telegram bot sucessfully connected as %s#%s", me.username, me.id);
+            telebot_put_me(&me);
+            log_info("Telegram bot sucessfully connected as @%s (%s)", me.username, me.id);
+            //if (pthread_create(&telegram_bot_thread, NULL, telegram_listen_message, NULL) != 0
+            //    || pthread_join(telegram_bot_thread, NULL) != 0)
+            //{
+            //    fprintf(stderr, "Could not initialise telegram bot thread.\n");
+            //}
         }
     }
 
     FILE* rplace_config_file = fopen("rplace_bot.json", "rb");
     if (rplace_config_file == NULL)
     {
-        fprintf(stderr, "[CRITICAL] Could not read rplace config. File does not exist?.\n");
+        fprintf(stderr, "[CRITICAL] Could not read rplace config. File does not exist?\n");
         return 1;
     }
 
@@ -1746,7 +1822,7 @@ int main(int argc, char* argv[])
     }
     if (step != SQLITE_DONE)
     {
-        fprintf(stderr, "Could not apply active censors: %s\n", sqlite3_errmsg(bot_db));
+        fprintf(stderr, "[CRITICAL] Could not apply active censors: %s\n", sqlite3_errmsg(bot_db));
         return 1;
     }
 
