@@ -1268,7 +1268,7 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* data)
 
 }
 
-void create_periodic_archive(char* canvas_url, struct discord_channel* channel)
+void create_periodic_archive(char* canvas_url, int period_s, struct discord_channel* channel)
 {
     // Signal handler
     struct sigaction sa = {
@@ -1295,7 +1295,7 @@ void create_periodic_archive(char* canvas_url, struct discord_channel* channel)
 
     // Interval
     struct itimerspec its = {
-        .it_interval = { .tv_sec = 1800 }
+        .it_interval = { .tv_sec = period_s }
     };
     timer_settime(timer_id, 0, &its, NULL);  
 }
@@ -1337,7 +1337,14 @@ void on_archive(struct discord* client, const struct discord_message* event)
         return;
     }
 
-    struct discord_channel* channel = resolve_channel_mention(client, arg);
+    arg = strtok_r(NULL, " ", &count_state);
+    char* channel_name = arg;
+    if (channel_name == NULL)
+    {
+        on_mod_help(client, event);
+        return;
+    }
+    struct discord_channel* channel = resolve_channel_mention(client, channel_name);
     if (channel == NULL)
     {
         struct discord_create_message params = { .content =
@@ -1348,6 +1355,11 @@ void on_archive(struct discord* client, const struct discord_message* event)
 
     // Resolve channel
     arg = strtok_r(NULL, " ", &count_state);
+    if (arg == NULL)
+    {
+        on_mod_help(client, event);
+        return;
+    }
     struct parsed_timescale timescale = parse_timescale(arg);
     if (timescale.period_s < 300 || timescale.period_s > 172800)
     {
@@ -1358,6 +1370,7 @@ void on_archive(struct discord* client, const struct discord_message* event)
         snprintf(warning, warning_len, warning_template, timescale.period_original, timescale.period_unit);
         struct discord_create_message params = { .content = warning };
         discord_create_message(client, event->channel_id, &params, NULL);
+        return;
     }
 
     const char* query_inset_purge = "INSERT INTO PeriodicArchives (channel_id, period_s, board_url) VALUES (?, ?, ?)";
@@ -1385,10 +1398,13 @@ void on_archive(struct discord* client, const struct discord_message* event)
         return;
     }
 
-    // TODO: Call method to init period timer
+    create_periodic_archive(canvas_url, timescale.period_s, channel);
 
-    struct discord_create_message params = { .content =
-        "Sucessfully created archive in channel" };
+    const char* success_template = "Successfully set up automatic canvas archives at interval *%i %s* in channel %s.";
+    int success_len = snprintf(NULL, 0, success_template, timescale.period_original, timescale.period_unit, channel_name) + 1;
+    char* success = malloc(success_len);
+    snprintf(success, success_len, success_template, timescale.period_original, timescale.period_unit, channel_name);
+    struct discord_create_message params = { .content = success };
     discord_create_message(client, event->channel_id, &params, NULL);
 }
 
