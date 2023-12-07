@@ -1311,6 +1311,11 @@ void on_archive(struct discord* client, const struct discord_message* event)
 
     arg = strtok_r(NULL, " ", &count_state);
     char* canvas_name = arg;
+    if (canvas_name == NULL)
+    {
+        on_mod_help(client, event);
+        return;
+    }
     char* canvas_url = NULL;
     for (int i = 0; i < rplace_bot_config->mod_roles_count; i++)
     {
@@ -1331,11 +1336,6 @@ void on_archive(struct discord* client, const struct discord_message* event)
         return;
     }
 
-    if (arg == NULL)
-    {
-        on_mod_help(client, event);
-        return;
-    }
     struct discord_channel* channel = resolve_channel_mention(client, arg);
     if (channel == NULL)
     {
