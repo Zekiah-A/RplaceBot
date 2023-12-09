@@ -1,6 +1,7 @@
 // RplaceBot (c) Zekiah-A - BUILD INSTRUCTIONS:
 #include <bits/types/siginfo_t.h>
 #include <concord/discord_codecs.h>
+#include <concord/types.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <concord/discord.h>
@@ -54,9 +55,28 @@ struct parsed_timescale {
 };
 
 struct period_timer_info {
+    struct discord* client;
     timer_t* timer_id;
     char* canvas_url;
-    struct discord_channel* channel;
+    u64snowflake channel_id;
+};
+
+#define GENERATION_ERROR_NONE 0
+#define GENERATION_FAIL_FETCH 1
+#define GENERATION_FAIL_DRAW 2
+
+struct downloaded_backup {
+    int size;
+    uint8_t* data;
+    int error;
+    char* error_msg;
+};
+
+struct canvas_image {
+    int error;
+    char* error_msg;
+    int length;
+    uint8_t* data;
 };
 
 struct censor* active_censors;
@@ -115,7 +135,7 @@ void handle_sigint(int signum)
 {
     if (requested_sigint)
     {
-        printf("\rForce quitting!");
+        printf("\rForce quitting!\n");
         abort();
     }
     if (signum == SIGINT)
@@ -125,12 +145,6 @@ void handle_sigint(int signum)
         sqlite3_close(bot_db);
         discord_shutdown(_discord_client);
     }
-}
-
-void on_ready(struct discord* client, const struct discord_ready* event)
-{
-    log_info("Rplace canvas bot succesfully connected to Discord as %s#%s!",
-             event->user->username, event->user->discriminator);
 }
 
 struct parsed_timescale parse_timescale(char* arg) {
@@ -953,6 +967,189 @@ size_t fetch_memory_callback(void* contents, size_t size, size_t nmemb, void *us
     return realsize;
 }
 
+struct downloaded_backup download_canvas_backup(char* canvas_url)
+{
+    struct downloaded_backup download_result = { .error = GENERATION_ERROR_NONE }; 
+    pthread_mutex_lock(&fetch_lock);
+    CURL* curl = curl_easy_init();
+    CURLcode result;
+    struct memory_fetch chunk;
+    chunk.memory = malloc(1);
+    chunk.size = 0;
+
+    curl_easy_setopt(curl, CURLOPT_HTTPGET, 1);
+    curl_easy_setopt(curl, CURLOPT_URL, canvas_url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fetch_memory_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &chunk);
+
+    result = curl_easy_perform(curl);
+    if (result != CURLE_OK)
+    {
+        fprintf(stderr, "Error fetching file: %s\n", curl_easy_strerror(result));
+        download_result.error = GENERATION_FAIL_FETCH;
+        download_result.error_msg = "Sorry, an unexpected network error ocurred and I can't fetch that canvas, "
+            "please try again later.";
+    }
+
+    download_result.data = (uint8_t*) chunk.memory;
+    download_result.size = chunk.size;
+    curl_easy_cleanup(curl);
+    pthread_mutex_unlock(&fetch_lock);
+    return download_result;
+}
+
+struct downloaded_backup rle_decode_board(int canvas_width, int canvas_height, uint8_t** ref_board, int* size)
+{
+    // Then this is a new format (RLE encoded) board that must be decoded
+    int decoded_size = canvas_width * canvas_height;
+    uint8_t* board = *ref_board; 
+    uint8_t* decoded_board = malloc(decoded_size);
+    int boardI = 0;
+    uint8_t colour = 0;
+
+    for (int i = 0; i < *size; i++)
+    {
+        // Then it is a palette value
+        if (i % 2 == 0)
+        {
+            colour = board[i];
+            continue;
+        }
+        // After the colour, we koop until we unpack all repeats, since we never have zero
+        // repeats, we use 0 as 1 so we treat everything as i + 1 repeats.
+        for (int j = 0; j < board[i] + 1; j++)
+        {
+            decoded_board[boardI] = colour;
+            boardI++;
+        }
+    }
+
+    free(board);
+    *ref_board = decoded_board;
+    *size = decoded_size;
+}
+
+struct region_info {
+    int start_x;
+    int start_y;
+    int scale;
+};
+
+struct canvas_image generate_canvas_image(int canvas_width, int canvas_height, struct region_info region, uint8_t* board, int size)
+{
+    struct canvas_image gen_result = { };
+    png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (png_ptr == NULL)
+    {
+        gen_result.error = GENERATION_FAIL_DRAW;
+        gen_result.error_msg = "Sorry, an unexpected drawing error ocurred and I can't create an image of that canvas, "
+            "please try again later.";
+        png_destroy_write_struct(&png_ptr, NULL);
+        return gen_result;
+    }
+
+    png_infop info_ptr = png_create_info_struct(png_ptr);
+    if (info_ptr == NULL)
+    {
+        gen_result.error = GENERATION_FAIL_DRAW;
+        gen_result.error_msg = "Sorry, an unexpected drawing error ocurred and I can't create an image of that canvas, "
+            "please try again later.";
+        // Cleanup resources
+        png_destroy_write_struct(&png_ptr, NULL);
+        return gen_result;
+    }
+
+    char* stream_buffer = NULL;
+    size_t stream_length = 0;
+    FILE* memory_stream = open_memstream(&stream_buffer, &stream_length);
+    if (!region.scale)
+    {
+        // Ensure default value
+        region.scale = 1;
+    }
+    int region_width = canvas_width - 1 - region.start_x;
+    int region_height = canvas_height - 1 - region.start_y;
+    int region_scaled_width = region_width * region.scale;
+    int region_scaled_height = region_height * region.scale;
+
+    png_init_io(png_ptr, memory_stream);
+    png_set_IHDR(png_ptr, info_ptr, region_scaled_width, region_scaled_height, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    png_write_info(png_ptr, info_ptr);
+
+    png_bytep row_pointers[region_scaled_height]; // 2D ptr array
+
+    for (int i = 0; i < region_scaled_height; i++)
+    {
+        row_pointers[i] = (png_bytep) malloc(3 * region_scaled_width);
+    }
+
+    int i = canvas_width * region.start_y + region.start_x;
+    while (i < canvas_width * canvas_height)
+    {
+        // Copy over colour to image
+        int x = i / canvas_width - region.start_y;       // image x (assuming image scale 1:1 with canvas)
+        int y = 3 * (i % canvas_width - region.start_x); // image y (assuming image scale 1:1 with canvas + accounting for 3 byte colour)
+
+        if (region.scale == 1)
+        {
+            uint8_t* position = &row_pointers[x][y];
+
+            for (int p = 0; p < 3; p++)
+            {
+                position[p] = default_palette[board[i]][p]; // colour
+            }
+        }
+        else
+        {
+            for (int sx = 0; sx < region.scale; sx++)
+            {
+                for (int sy = 0; sy < region.scale; sy++)
+                {
+                    uint8_t* position = &row_pointers
+                        [x * region.scale + sx]      // We project X to upscaled X position
+                        [y * region.scale + sy * 3]; // We project Y to upscaled Y position
+
+                    for (int p = 0; p < 3; p++)
+                    {
+                        position[p] = default_palette[board[i]][p]; // colour
+                    }
+                }
+            }
+        }
+        i++;
+
+        // If we exceed width, go to next row, otherwise keep drawing on this row
+        if (i % canvas_width < region.start_x + region_width)
+        {
+            continue;
+        }
+
+        // If we exceed end bottom, we are done drawing this
+        if (i / canvas_width >= region.start_y + region_height - 1)
+        {
+            break;
+        }
+
+        i += canvas_width - region_width;
+    }
+
+    png_write_image(png_ptr, row_pointers);
+
+    for (int i = 0; i < region_scaled_height; i++)
+    {
+        free(row_pointers[i]);
+    }
+    
+    png_write_end(png_ptr, NULL);
+    fflush(memory_stream);
+    fclose(memory_stream);
+    png_destroy_write_struct(&png_ptr, &info_ptr);
+    
+    gen_result.data = (uint8_t*) stream_buffer;
+    gen_result.length = stream_length;
+    return gen_result;
+}
+
 void on_canvas_mention(struct discord* client, const struct discord_message* event)
 {
     if (event->author->bot)
@@ -996,11 +1193,9 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
 
     int start_x = 0;
     int start_y = 0;
-    int width = canvas_width - 1;
-    int height = canvas_height - 1;
+    int region_width = canvas_width - 1;
+    int region_height = canvas_height - 1;
     int scale = 1;
-    int scaled_width = width;
-    int scaled_height = height;
 
     // No arguments is allowed as it will just do a 1:1 full canvas preview
     arg = strtok_r(NULL, " ", &count_state);
@@ -1027,7 +1222,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
             discord_create_message(client, event->channel_id, &params, NULL);
             return;
         }
-        width = MIN(canvas_width - 1 - start_x, atoi(arg));
+        region_width = MIN(canvas_width - 1 - start_x, atoi(arg));
 
         arg = strtok_r(NULL, " ", &count_state);
         if (arg == NULL)
@@ -1038,9 +1233,9 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
             discord_create_message(client, event->channel_id, &params, NULL);
             return;
         }
-        height = MIN(canvas_height - 1 - start_y, atoi(arg));
+        region_height = MIN(canvas_height - 1 - start_y, atoi(arg));
 
-        if (width <= 0 || height <= 0)
+        if (region_width <= 0 || region_height <= 0)
         {
             struct discord_create_message params = { .content =
                 "Height or width can not be zero, use this command like:\n"
@@ -1048,9 +1243,6 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
             discord_create_message(client, event->channel_id, &params, NULL);
             return;
         }
-
-        scaled_width = width;
-        scaled_height = height;
 
         arg = strtok_r(NULL, " ", &count_state);
         if (arg != NULL)
@@ -1062,178 +1254,37 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
             }
 
             scale = MAX(1, MIN(10, atoi(arg)));
-            scaled_width = width * scale;
-            scaled_height = height * scale;
         }
     }
     // Reassure client that we have stared before we do any heavy lifting
     discord_create_reaction(client, event->channel_id, event->id,
         0, "✅", NULL);
-    // Lock before we fetch to ensure no overlapping curl actions
-    pthread_mutex_lock(&fetch_lock);
 
-    // Fetch and render canvas
-    char* stream_buffer = NULL;
-    size_t stream_length = 0;
-    FILE* memory_stream = open_memstream(&stream_buffer, &stream_length);
-    CURL* curl = curl_easy_init();
-    CURLcode result;
-    struct memory_fetch chunk;
-    chunk.memory = malloc(1);
-    chunk.size = 0;
-
-    curl_easy_setopt(curl, CURLOPT_HTTPGET, 1);
-    curl_easy_setopt(curl, CURLOPT_URL, canvas_url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fetch_memory_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &chunk);
-
-    result = curl_easy_perform(curl);
-    if (result != CURLE_OK)
+    // Fetch decode board
+    struct downloaded_backup backup = download_canvas_backup(canvas_url);
+    if (backup.error)
     {
-        fprintf(stderr, "Error fetching file: %s\n", curl_easy_strerror(result));
-
-        struct discord_create_message params = { .content =
-            "Sorry, an unexpected network error ocurred and I can't fetch that canvas, "
-            "please try again later." };
+        struct discord_create_message params = { .content = backup.error_msg };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
-
-    // Then this is a new format (RLE encoded) board that must be decoded
-    if (chunk.size < canvas_width * canvas_height)
+    if (backup.size < canvas_width * canvas_height)
     {
-        int decoded_size = canvas_width * canvas_height;
-        uint8_t* decoded_board = malloc(decoded_size);
-        int boardI = 0;
-        int colour = 0;
-
-        for (int i = 0; i < chunk.size; i++)
-        {
-            // Then it is a palette value
-            if (i % 2 == 0)
-            {
-                colour = chunk.memory[i];
-                continue;
-            }
-            // After the colour, we koop until we unpack all repeats, since we never have zero
-            // repeats, we use 0 as 1 so we treat everything as i + 1 repeats.
-            for (int j = 0; j < chunk.memory[i] + 1; j++)
-            {
-                decoded_board[boardI] = colour;
-                boardI++;
-            }
-        }
-
-        free(chunk.memory);
-        chunk.memory = decoded_board;
-        chunk.size = decoded_size;
+        // It is likely a RLE compressed new format board
+        rle_decode_board(canvas_width, canvas_height, &backup.data, &backup.size);
     }
-
-    png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    if (png_ptr == NULL)
+    struct region_info region = {
+        .scale = scale,
+        .start_x = start_x,
+        .start_y = start_y
+    };
+    struct canvas_image canvas_image = generate_canvas_image(canvas_width, canvas_height, region, backup.data, backup.size);
+    if (canvas_image.error)
     {
-        struct discord_create_message params = { .content =
-            "Sorry, an unexpected drawing error ocurred and I can't create an image of that canvas, "
-            "please try again later." };
+        struct discord_create_message params = { .content = backup.error_msg };
         discord_create_message(client, event->channel_id, &params, NULL);
-
-        // Cleanup resources
-        png_destroy_write_struct(&png_ptr, NULL);
-        free(chunk.memory);
-        fclose(memory_stream);
-        free(stream_buffer);
-        curl_easy_cleanup(curl);
-        pthread_mutex_unlock(&fetch_lock);
         return;
     }
-
-    png_infop info_ptr = png_create_info_struct(png_ptr);
-    if (info_ptr == NULL)
-    {
-        struct discord_create_message params = { .content =
-            "Sorry, an unexpected drawing error ocurred and I can't create an image of that canvas, "
-            "please try again later." };
-
-        // Cleanup resources
-        png_destroy_write_struct(&png_ptr, NULL);
-        free(chunk.memory);
-        fclose(memory_stream);
-        free(stream_buffer);
-        curl_easy_cleanup(curl);
-        pthread_mutex_unlock(&fetch_lock);
-        return;
-    }
-
-    png_init_io(png_ptr, memory_stream);
-    png_set_IHDR(png_ptr, info_ptr, scaled_width, scaled_height, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
-    png_write_info(png_ptr, info_ptr);
-
-    png_bytep row_pointers[scaled_height]; // 2D ptr array
-
-    for (int i = 0; i < scaled_height; i++)
-    {
-        row_pointers[i] = (png_bytep) malloc(3*  scaled_width);
-    }
-
-    int i = canvas_width * start_y + start_x;
-    while (i < canvas_width * canvas_height)
-    {
-        // Copy over colour to image
-        int x = i / canvas_width - start_y;       // image x (assuming image scale 1:1 with canvas)
-        int y = 3 * (i % canvas_width - start_x); // image y (assuming image scale 1:1 with canvas + accounting for 3 byte colour)
-
-        if (scale == 1)
-        {
-            uint8_t* position = &row_pointers[x][y];
-
-            for (int p = 0; p < 3; p++)
-            {
-                position[p] = default_palette[chunk.memory[i]][p]; // colour
-            }
-        }
-        else
-        {
-            for (int sx = 0; sx < scale; sx++)
-            {
-                for (int sy = 0; sy < scale; sy++)
-                {
-                    uint8_t* position = &row_pointers
-                        [x * scale + sx]      // We project X to upscaled X position
-                        [y * scale + sy * 3]; // We project Y to upscaled Y position
-
-                    for (int p = 0; p < 3; p++)
-                    {
-                        position[p] = default_palette[chunk.memory[i]][p]; // colour
-                    }
-                }
-            }
-        }
-        i++;
-
-        // If we exceed width, go to next row, otherwise keep drawing on this row
-        if (i % canvas_width < start_x + width)
-        {
-            continue;
-        }
-
-        // If we exceed end bottom, we are done drawing this
-        if (i / canvas_width >= start_y + height - 1)
-        {
-            break;
-        }
-
-        i += canvas_width - width;
-    }
-
-    png_write_image(png_ptr, row_pointers);
-
-    for (int i = 0; i < scaled_height; i++)
-    {
-        free(row_pointers[i]);
-    }
-
-    png_write_end(png_ptr, NULL);
-    fflush(memory_stream);
 
     // At minimum, may be "Image at 65535 65535 on ``, source: " (length 36 + 1 (\0))
     int max_response_length = strlen(canvas_url) + strlen(canvas_name) + 37;
@@ -1246,29 +1297,58 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         .attachments = &(struct discord_attachments){
             .size = 1,
             .array = &(struct discord_attachment){
-                .content = stream_buffer,
-                .size = stream_length,
-                .filename = "place.png"},
+                .content = (char*) canvas_image.data,
+                .size = canvas_image.length,
+                .filename = "place.png" },
         }};
     discord_create_message(client, event->channel_id, &params, NULL);
-
-    // Cleanup
-    free(chunk.memory);
-    fclose(memory_stream);
-    free(stream_buffer);
-    curl_easy_cleanup(curl);
-    pthread_mutex_unlock(&fetch_lock);
-    png_destroy_write_struct(&png_ptr, &info_ptr);
+    free(canvas_image.data);
 }
 
 // Allows the bot user to define a channel wherein the bot shall send periodic archives to
 // this method is called on an interval specified by end user
-void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* data)
-{
+void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
+{   
+    struct period_timer_info archive_info = *((struct period_timer_info*) sig_info->si_value.sival_ptr);
+    // Fetch decode board
+    struct downloaded_backup backup = download_canvas_backup(archive_info.canvas_url);
+    if (backup.error)
+    {
+        fprintf(stderr, "Failed to create periodic canvas backup in channel %llu. Fetch failed with error code %i: %s\n",
+            (unsigned long long) archive_info.channel_id, backup.error, backup.error_msg);
+        return;
+    }
+    struct region_info region = {
+        .scale = 1,
+        .start_x = 0,
+        .start_y = 0
+    };
+    struct canvas_image canvas_image = generate_canvas_image(1000, 1000, region, backup.data, backup.size);
+    if (canvas_image.error)
+    {
+        fprintf(stderr, "Failed to create periodic canvas backup in channel %llu. Fetch failed with error code %i: %s\n",
+            (unsigned long long) archive_info.channel_id, backup.error, backup.error_msg);
+        return;
+    }
 
+    int max_content_length = strlen(archive_info.canvas_url) + 48;
+    char* message_content = alloca(max_content_length + 1);
+    snprintf(message_content, max_content_length, ":alarm_clock:  Automatic canvas backup. Source %s",
+        archive_info.canvas_url);
+    struct discord_create_message params = {
+        .content = message_content,
+        .attachments = &(struct discord_attachments){
+            .size = 1,
+            .array = &(struct discord_attachment){
+                .content = (char*) canvas_image.data,
+                .size = canvas_image.length,
+                .filename = "place.png"},
+        }};
+    discord_create_message(archive_info.client, archive_info.channel_id, &params, NULL);
+    free(canvas_image.data);
 }
 
-void create_periodic_archive(char* canvas_url, int period_s, struct discord_channel* channel)
+void create_periodic_archive(struct discord* client, char* canvas_url, int period_s, u64snowflake channel_id)
 {
     // Signal handler
     struct sigaction sa = {
@@ -1280,24 +1360,51 @@ void create_periodic_archive(char* canvas_url, int period_s, struct discord_chan
 
     // Set up timer
     // canvas_url : timer id
-    timer_t timer_id;
-    struct period_timer_info handler_info = {
-        .timer_id = &timer_id,
-        .canvas_url = canvas_url,
-        .channel = channel
-    };
+    timer_t* timer_id = malloc(sizeof(timer_t));
+    struct period_timer_info* handler_info = malloc(sizeof(struct period_timer_info));
+    handler_info->client = client;
+    handler_info->timer_id = timer_id;
+    handler_info->canvas_url = canvas_url;
+    handler_info->channel_id = channel_id;
+
     struct sigevent sev = {
         .sigev_notify = SIGEV_SIGNAL,
         .sigev_signo = SIGRTMIN,
-        .sigev_value.sival_ptr = &handler_info
+        .sigev_value.sival_ptr = handler_info
     };
-    timer_create(CLOCK_REALTIME, &sev, &timer_id);
+    timer_create(CLOCK_REALTIME, &sev, timer_id);
 
     // Interval
+    // TODO: If bot restarts are frequent, then save last send in DB and set it_value to a value that maintains interval seamlessly
     struct itimerspec its = {
-        .it_interval = { .tv_sec = period_s }
+        .it_interval = { .tv_sec = period_s, .tv_nsec = 0 },
+        .it_value = { .tv_sec = 1  }
     };
-    timer_settime(timer_id, 0, &its, NULL);  
+    timer_settime(*timer_id, 0, &its, NULL);  
+}
+
+void start_all_periodic_archives(struct discord* client)
+{
+    const char* query_get_archives = "SELECT * FROM PeriodicArchives;";
+    sqlite3_stmt* archives_cmp_statement;
+    db_err = sqlite3_prepare_v2(bot_db, query_get_archives, -1, &archives_cmp_statement, NULL);
+
+    if (db_err != SQLITE_OK)
+    {
+        fprintf(stderr, "Could not prepare get PeriodicArchives: %s\n", sqlite3_errmsg(bot_db));
+        return;
+    }
+
+    while (sqlite3_step(archives_cmp_statement) == SQLITE_ROW)
+    {
+        const uint64_t channel_id = sqlite3_column_int64(archives_cmp_statement, 0);
+        const int period_s = sqlite3_column_int(archives_cmp_statement, 1);
+        const unsigned char* board_url_text = sqlite3_column_text(archives_cmp_statement, 2);
+
+        char* canvas_url = strdup((char*) board_url_text);
+        create_periodic_archive(client, canvas_url, period_s, channel_id);
+    }
+    sqlite3_finalize(archives_cmp_statement);
 }
 
 void on_archive(struct discord* client, const struct discord_message* event)
@@ -1397,8 +1504,7 @@ void on_archive(struct discord* client, const struct discord_message* event)
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
-
-    create_periodic_archive(canvas_url, timescale.period_s, channel);
+    create_periodic_archive(client, canvas_url, timescale.period_s, channel->id);
 
     const char* success_template = "Successfully set up automatic canvas archives at interval *%i %s* in channel %s.";
     int success_len = snprintf(NULL, 0, success_template, timescale.period_original, timescale.period_unit, channel_name) + 1;
@@ -1542,6 +1648,13 @@ void on_message(struct discord* client, const struct discord_message* event)
             active_censors_size--;
         }
     }
+}
+
+void on_discord_ready(struct discord* client, const struct discord_ready* event)
+{
+    log_info("\x1b[32;1mRplace canvas bot succesfully connected to Discord as %s#%s!\x1b[0m\n",
+                event->user->username, event->user->discriminator);
+    start_all_periodic_archives(client);
 }
 
 int msleep(unsigned long milliseconds)
@@ -1723,7 +1836,7 @@ int main(int argc, char* argv[])
 
     if (_telegram_client != NULL)
     {
-        telebot_user_t me;
+        /*telebot_user_t me;
         if (telebot_get_me(_telegram_client, &me) != TELEBOT_ERROR_NONE)
         {
             log_error("Couldn't initialise telegram bot. Failed to get bot information. Bot will be disabled");
@@ -1734,12 +1847,12 @@ int main(int argc, char* argv[])
         {
             telebot_put_me(&me);
             log_info("Telegram bot sucessfully connected as @%s (%s)", me.username, me.id);
-            //if (pthread_create(&telegram_bot_thread, NULL, telegram_listen_message, NULL) != 0
-            //    || pthread_join(telegram_bot_thread, NULL) != 0)
-            //{
-            //    fprintf(stderr, "Could not initialise telegram bot thread.\n");
-            //}
-        }
+            if (pthread_create(&telegram_bot_thread, NULL, telegram_listen_message, NULL) != 0
+                || pthread_join(telegram_bot_thread, NULL) != 0)
+            {
+                fprintf(stderr, "Could not initialise telegram bot thread.\n");
+            }
+        }*/
     }
 
     FILE* rplace_config_file = fopen("rplace_bot.json", "rb");
@@ -1846,7 +1959,7 @@ int main(int argc, char* argv[])
     _discord_client = client;
     signal(SIGINT, handle_sigint);
 
-    discord_set_on_ready(client, &on_ready);
+    discord_set_on_ready(client, &on_discord_ready);
     discord_set_on_command(client, "view", &on_canvas_mention);
     discord_set_on_command(client, "help", &on_help);
     discord_set_on_command(client, "status", &on_status);
