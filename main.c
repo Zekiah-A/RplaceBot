@@ -1285,6 +1285,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         .start_y = start_y
     };
     struct canvas_image canvas_image = generate_canvas_image(canvas_width, canvas_height, region, backup.data, backup.size);
+    free(backup.data);
     if (canvas_image.error)
     {
         struct discord_create_message params = { .content = backup.error_msg };
@@ -1362,6 +1363,7 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
         .start_y = 0
     };
     struct canvas_image canvas_image = generate_canvas_image(1000, 1000, region, backup.data, backup.size);
+    free(backup.data);
     if (canvas_image.error)
     {
         fprintf(stderr, "Failed to create periodic canvas backup in channel %llu. Fetch failed with error code %i: %s\n",
