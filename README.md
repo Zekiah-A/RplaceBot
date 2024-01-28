@@ -76,10 +76,12 @@ Create rplace_bot.json for bot-specific functionality like the following
   'curl_easy_perform() failed: Unsupported protocol' error messages. To check if your cURL has support,
   run curl --version and check for ws/wss protocols present. To self compile CURL
   on UNIX look at https://github.com/curl/curl/blob/master/GIT-INFO to compile the latest sources.
-  Make sure to include the required features while configuring (`./configure --with-openssl --enable-websockets`)
+  Make sure to include the required features while configuring (`./configure --with-openssl --enable-websockets`).
 
 - This project can be debugged with `make CFLAGS="-Wall -Wextra -Wno-unused-parameter -g -fsanitize=address"`
-  and gdb.
+  and gdb. Memory checks can be performed with `valgrind ./build/RplaceBot --vgdb-error=0 --error-limit=no --show-leak-kinds=all`
+  (ensure bot is built with debug symbols beforehand), then simultenously run `gdb ./build/RplaceBot`,
+  `handle SIG34 nostop noprint pass`, `target remote | vgdb --pid={VALGRIND_PID}`, or use [valkyrie](https://valgrind.org/downloads/guis.html)
 
 - The project can be build by running `mkdir build`, `cd build`, `cmake ..` and `make` in order
   within the base project directory.

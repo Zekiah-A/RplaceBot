@@ -19,6 +19,7 @@
 #include "lib/parson.h"
 #include "lib/telebot/include/telebot.h"
 #include <errno.h>
+#include <sys/stat.h>
 
 struct memory_fetch {
     size_t size;
@@ -123,9 +124,6 @@ uint8_t default_palette[32][3] = {
 pthread_mutex_t fetch_lock;
 
 sqlite3* bot_db;
-int db_err;
-char* db_err_msg;
-
 struct discord* _discord_client;
 telebot_handler_t _telegram_client;
 pthread_t telegram_bot_thread;
@@ -249,6 +247,7 @@ struct discord_channel* resolve_channel_mention(struct discord* client, const ch
         return NULL;
     }
 
+    // TODO: Stack allocate this instead
     struct discord_channel* channel = malloc(sizeof(struct discord_channel));
     struct discord_ret_channel ret_channel = { .sync = channel };
     if (discord_get_channel(client, channel_id, &ret_channel) != CCORD_OK)
@@ -437,7 +436,8 @@ void on_1984(struct discord* client, const struct discord_message* event)
     if (sqlite3_step(existing_cmp_statement) == SQLITE_ROW)
     {
         char* query_delete_1984 = sqlite3_mprintf("DELETE FROM CensorsHistory WHERE member_id='%llu'", member->id);
-        db_err = sqlite3_exec(bot_db, query_delete_1984, NULL, NULL, &db_err_msg);
+        char* db_err_msg;
+        int db_err = sqlite3_exec(bot_db, query_delete_1984, NULL, NULL, &db_err_msg);
         if (db_err != SQLITE_OK)
         {
             free(member);
@@ -763,7 +763,7 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
 
     const char* query_get_censors = "SELECT * FROM CensorsHistory;";
     sqlite3_stmt* censors_cmp_statement;
-    db_err = sqlite3_prepare_v2(bot_db, query_get_censors, -1, &censors_cmp_statement, NULL);
+    int db_err = sqlite3_prepare_v2(bot_db, query_get_censors, -1, &censors_cmp_statement, NULL);
 
     if (db_err != SQLITE_OK)
     {
@@ -953,13 +953,14 @@ size_t fetch_memory_callback(void* contents, size_t size, size_t nmemb, void *us
     size_t realsize = size * nmemb;
     struct memory_fetch* fetch = (struct memory_fetch*) userp;
 
-    fetch->memory = realloc(fetch->memory, fetch->size + realsize);
-    if (fetch->memory == NULL)
+    void* new_memory = realloc(fetch->memory, fetch->size + realsize);
+    if (new_memory == NULL)
     {
         fetch->size = 0;
         fprintf(stderr, "Not enough memory to continue fetch (realloc returned NULL)\n");
         return 0;
     }
+    fetch->memory = new_memory;
 
     memcpy(&(fetch->memory[fetch->size]), contents, realsize);
     fetch->size += realsize;
@@ -973,7 +974,7 @@ struct downloaded_backup download_canvas_backup(char* canvas_url)
     pthread_mutex_lock(&fetch_lock);
     CURL* curl = curl_easy_init();
     CURLcode result;
-    struct memory_fetch chunk;
+    struct memory_fetch chunk = { };
     chunk.memory = malloc(1);
     chunk.size = 0;
 
@@ -985,6 +986,11 @@ struct downloaded_backup download_canvas_backup(char* canvas_url)
     result = curl_easy_perform(curl);
     if (result != CURLE_OK)
     {
+        if (chunk.memory != NULL)
+        {
+            free(chunk.memory);
+        }
+
         fprintf(stderr, "Error fetching file: %s\n", curl_easy_strerror(result));
         download_result.error = GENERATION_FAIL_FETCH;
         download_result.error_msg = "Sorry, an unexpected network error ocurred and I can't fetch that canvas, "
@@ -1308,14 +1314,46 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
 // Allows the bot user to define a channel wherein the bot shall send periodic archives to
 // this method is called on an interval specified by end user
 void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
-{   
-    struct period_timer_info archive_info = *((struct period_timer_info*) sig_info->si_value.sival_ptr);
+{
+    struct period_timer_info* archive_info = ((struct period_timer_info*) sig_info->si_value.sival_ptr);
+    
+    // If channel doesn't exist anymore, reject rendering backup, remove from timer loop and SQLite DB
+    struct discord_channel channel = { };
+    struct discord_ret_channel ret_channel = { .sync = &channel };
+    if (discord_get_channel(archive_info->client, archive_info->channel_id, &ret_channel) != CCORD_OK)
+    {
+        const char* delete_periodic_query = "DELETE FROM PeriodicArchives WHERE channel_id = ? AND board_url = ?";
+        sqlite3_stmt* delete_cmp_statement;
+        
+        int db_err = sqlite3_prepare_v2(bot_db, delete_periodic_query, -1, &delete_cmp_statement, NULL);
+        if (db_err != SQLITE_OK)
+        {
+            fprintf(stderr, "Could not prepare delete periodic archive: %s\n", sqlite3_errmsg(bot_db));
+        }
+        else
+        {
+            sqlite3_bind_int64(delete_cmp_statement, 1, archive_info->channel_id);
+            sqlite3_bind_text(delete_cmp_statement, 2, archive_info->canvas_url, -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(delete_cmp_statement) != SQLITE_DONE)
+            {
+                fprintf(stderr, "Could not delete periodic archive: %s\n", sqlite3_errmsg(bot_db));
+            }
+            sqlite3_finalize(delete_cmp_statement);
+        }
+
+        timer_delete(archive_info->timer_id);
+        free(archive_info->timer_id);
+        free(archive_info);
+        return;
+    }
+
+
     // Fetch decode board
-    struct downloaded_backup backup = download_canvas_backup(archive_info.canvas_url);
+    struct downloaded_backup backup = download_canvas_backup(archive_info->canvas_url);
     if (backup.error)
     {
         fprintf(stderr, "Failed to create periodic canvas backup in channel %llu. Fetch failed with error code %i: %s\n",
-            (unsigned long long) archive_info.channel_id, backup.error, backup.error_msg);
+            (unsigned long long) archive_info->channel_id, backup.error, backup.error_msg);
         return;
     }
     struct region_info region = {
@@ -1327,14 +1365,14 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
     if (canvas_image.error)
     {
         fprintf(stderr, "Failed to create periodic canvas backup in channel %llu. Fetch failed with error code %i: %s\n",
-            (unsigned long long) archive_info.channel_id, backup.error, backup.error_msg);
+            (unsigned long long) archive_info->channel_id, backup.error, backup.error_msg);
         return;
     }
 
-    int max_content_length = strlen(archive_info.canvas_url) + 48;
+    int max_content_length = strlen(archive_info->canvas_url) + 48;
     char* message_content = alloca(max_content_length + 1);
     snprintf(message_content, max_content_length, ":alarm_clock:  Automatic canvas backup. Source %s",
-        archive_info.canvas_url);
+        archive_info->canvas_url);
     struct discord_create_message params = {
         .content = message_content,
         .attachments = &(struct discord_attachments){
@@ -1344,7 +1382,7 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
                 .size = canvas_image.length,
                 .filename = "place.png"},
         }};
-    discord_create_message(archive_info.client, archive_info.channel_id, &params, NULL);
+    discord_create_message(archive_info->client, archive_info->channel_id, &params, NULL);
     free(canvas_image.data);
 }
 
@@ -1374,7 +1412,6 @@ void create_periodic_archive(struct discord* client, char* canvas_url, int perio
     };
     timer_create(CLOCK_REALTIME, &sev, timer_id);
 
-    // Interval
     // TODO: If bot restarts are frequent, then save last send in DB and set it_value to a value that maintains interval seamlessly
     struct itimerspec its = {
         .it_interval = { .tv_sec = period_s, .tv_nsec = 0 },
@@ -1387,7 +1424,7 @@ void start_all_periodic_archives(struct discord* client)
 {
     const char* query_get_archives = "SELECT * FROM PeriodicArchives;";
     sqlite3_stmt* archives_cmp_statement;
-    db_err = sqlite3_prepare_v2(bot_db, query_get_archives, -1, &archives_cmp_statement, NULL);
+    int db_err = sqlite3_prepare_v2(bot_db, query_get_archives, -1, &archives_cmp_statement, NULL);
 
     if (db_err != SQLITE_OK)
     {
@@ -1400,6 +1437,7 @@ void start_all_periodic_archives(struct discord* client)
         const uint64_t channel_id = sqlite3_column_int64(archives_cmp_statement, 0);
         const int period_s = sqlite3_column_int(archives_cmp_statement, 1);
         const unsigned char* board_url_text = sqlite3_column_text(archives_cmp_statement, 2);
+
 
         char* canvas_url = strdup((char*) board_url_text);
         create_periodic_archive(client, canvas_url, period_s, channel_id);
@@ -1770,7 +1808,8 @@ void process_rplace_config_json(const char* json_string, struct rplace_config* c
     config->view_canvases_count = json_object_get_count(view_canvases_obj);
     config->view_canvases = (struct view_canvas*) malloc(config->view_canvases_count * sizeof(struct view_canvas));
 
-    for (int canvas_index = 0; canvas_index < config->view_canvases_count; canvas_index++) {
+    for (int canvas_index = 0; canvas_index < config->view_canvases_count; canvas_index++)
+    {
         const char* canvas_name = json_object_get_name(view_canvases_obj, canvas_index);
         JSON_Value* canvas_value = json_object_get_value_at(view_canvases_obj, canvas_index);
         
@@ -1806,10 +1845,13 @@ telebot_handler_t process_telegram_config_json(const char* json_string)
 
 long get_file_length(FILE* file)
 {
-    fseek(file, 0L, SEEK_END);
-    long file_size = ftell(file);
-    fseek(file, 0L, SEEK_SET);
-    return file_size;
+    struct stat file_stat;
+    if (fstat(fileno(file), &file_stat) == -1)
+    {
+        perror("Error getting file status");
+        return -1;
+    }
+    return file_stat.st_size;
 }
 
 int main(int argc, char* argv[])
@@ -1836,7 +1878,9 @@ int main(int argc, char* argv[])
 
     if (_telegram_client != NULL)
     {
-        /*telebot_user_t me;
+        /*
+        
+        telebot_user_t me;
         if (telebot_get_me(_telegram_client, &me) != TELEBOT_ERROR_NONE)
         {
             log_error("Couldn't initialise telegram bot. Failed to get bot information. Bot will be disabled");
@@ -1888,7 +1932,8 @@ int main(int argc, char* argv[])
         return 1;
     }
     
-    db_err = sqlite3_open("rplace_bot.db", &bot_db);
+    char* db_err_msg;
+    int db_err = sqlite3_open("rplace_bot.db", &bot_db);
     if (db_err)
     {
         fprintf(stderr, "[CRITICAL] Could not open bot database: %s\n", sqlite3_errmsg(bot_db));
