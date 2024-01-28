@@ -1892,7 +1892,7 @@ int main(int argc, char* argv[])
         else
         {
             telebot_put_me(&me);
-            log_info("Telegram bot sucessfully connected as @%s (%s)", me.username, me.id);
+            log_info("Telegram bot successfully connected as @%s (%s)", me.username, me.id);
             if (pthread_create(&telegram_bot_thread, NULL, telegram_listen_message, NULL) != 0
                 || pthread_join(telegram_bot_thread, NULL) != 0)
             {

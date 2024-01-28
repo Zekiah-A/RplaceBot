@@ -81,7 +81,7 @@ Create rplace_bot.json for bot-specific functionality like the following
 - This project can be debugged with `make CFLAGS="-Wall -Wextra -Wno-unused-parameter -g -fsanitize=address"`
   and gdb. Memory checks can be performed with `valgrind ./build/RplaceBot --vgdb-error=0 --error-limit=no --show-leak-kinds=all`
   (ensure bot is built with debug symbols beforehand), then simultenously run `gdb ./build/RplaceBot`,
-  `handle SIG34 nostop noprint pass`, `target remote | vgdb --pid={VALGRIND_PID}`, or use [valkyrie](https://valgrind.org/downloads/guis.html)
+  `handle SIG34 nostop noprint pass`, `target remote | vgdb --pid={VALGRIND_PID}`, or use [valkyrie](https://valgrind.org/downloads/guis.html) or [heaptrack](https://invent.kde.org/sdk/heaptrack)
 
 - The project can be build by running `mkdir build`, `cd build`, `cmake ..` and `make` in order
   within the base project directory.
