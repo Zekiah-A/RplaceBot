@@ -1051,36 +1051,22 @@ struct downloaded_backup download_canvas_backup(char* canvas_url)
 {
     // TODO: Use fetch instead
     struct downloaded_backup download_result = { .error = GENERATION_ERROR_NONE }; 
-    pthread_mutex_lock(&fetch_lock);
-    CURL* curl = curl_easy_init();
-    CURLcode result;
-    struct memory_fetch chunk = { };
-    chunk.memory = malloc(1);
-    chunk.size = 0;
-
-    curl_easy_setopt(curl, CURLOPT_HTTPGET, 1);
-    curl_easy_setopt(curl, CURLOPT_URL, canvas_url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fetch_memory_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &chunk);
-
-    result = curl_easy_perform(curl);
-    if (result != CURLE_OK)
+    struct memory_fetch response = fetch(canvas_url);
+    if (response.error)
     {
-        if (chunk.memory != NULL)
+        if (download_result.data != NULL)
         {
-            free(chunk.memory);
+            free(download_result.data);
+            download_result.data = NULL;
         }
-
-        fprintf(stderr, "Error fetching canvas backup: %s\n", curl_easy_strerror(result));
         download_result.error = GENERATION_FAIL_FETCH;
-        download_result.error_msg = "Sorry, an unexpected network error occurred and I can't fetch that canvas, "
-            "please try again later.";
+        download_result.error_msg = response.error_message;
     }
-
-    download_result.data = (uint8_t*) chunk.memory;
-    download_result.size = chunk.size;
-    curl_easy_cleanup(curl);
-    pthread_mutex_unlock(&fetch_lock);
+    else
+    {
+        download_result.data = response.memory;
+        download_result.size = response.size;
+    }
     return download_result;
 }
 
@@ -1361,7 +1347,9 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     struct downloaded_backup backup = download_canvas_backup(canvas_url);
     if (backup.error)
     {
-        struct discord_create_message params = { .content = backup.error_msg };
+        fprintf(stderr, "Error fetching canvas backup: %s\n", backup.error_msg);
+        struct discord_create_message params = { .content = "Sorry, an unexpected network error occurred and I "
+            "can't fetch that canvas, please try again later.;" };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
