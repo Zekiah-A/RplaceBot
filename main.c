@@ -434,7 +434,7 @@ void on_1984(struct discord* client, const struct discord_message* event)
     if (sqlite3_prepare_v2(bot_db, query_existing_1984, -1, &existing_cmp_statement, 0) != SQLITE_OK)
     {
         free(member);
-        fprintf(stderr, "Could not prepare existing censor: %s\n", sqlite3_errmsg(bot_db));
+        log_error("Could not prepare existing censor: %s\n", sqlite3_errmsg(bot_db));
         
         struct discord_create_message params = { .content = 
             "Failed to 1984 user. Internal bot error occured :skull:" };
@@ -453,7 +453,7 @@ void on_1984(struct discord* client, const struct discord_message* event)
         {
             free(member);
             sqlite3_finalize(existing_cmp_statement);
-            fprintf(stderr, "Could not remove existing censor: %s\n", db_err_msg);
+            log_error("Could not remove existing censor: %s\n", db_err_msg);
             sqlite3_free(db_err_msg);
 
             struct discord_create_message params = { .content = 
@@ -479,7 +479,7 @@ void on_1984(struct discord* client, const struct discord_message* event)
         if (sqlite3_step(insert_cmp_statement) != SQLITE_DONE)
         {
             free(member);
-            fprintf(stderr, "Could not insert censor: %s\n", sqlite3_errmsg(bot_db));
+            log_error("Could not insert censor: %s\n", sqlite3_errmsg(bot_db));
             
             struct discord_create_message params = { .content = 
                 "Failed to 1984 user. Internal bot error occured :skull:" };
@@ -492,7 +492,7 @@ void on_1984(struct discord* client, const struct discord_message* event)
     else
     {
         free(member);
-        fprintf(stderr, "Could not prepare insert censor: %s\n", sqlite3_errmsg(bot_db));
+        log_error("Could not prepare insert censor: %s\n", sqlite3_errmsg(bot_db));
         
         struct discord_create_message params = { .content = 
             "Failed to 1984 user. Internal bot error occured :skull:" };
@@ -564,7 +564,7 @@ void on_purge(struct discord* client, const struct discord_message* event)
         {
             free(member);
         }
-        fprintf(stderr, "Could not prepare get rate limit purges: %s\n", sqlite3_errmsg(bot_db));
+        log_error("Could not prepare get rate limit purges: %s\n", sqlite3_errmsg(bot_db));
 
         struct discord_create_message params = { .content =
             "Failed to purge messages. An internal bot error occured :skull:" };
@@ -607,7 +607,7 @@ void on_purge(struct discord* client, const struct discord_message* event)
         {
             free(member);
         }
-        fprintf(stderr, "Could not get purges history: %s\n", sqlite3_errmsg(bot_db));
+        log_error("Could not get purges history: %s\n", sqlite3_errmsg(bot_db));
 
         struct discord_create_message params = { .content = 
             "Failed to purge messages. An internal bot error occured :skull:" };
@@ -631,7 +631,7 @@ void on_purge(struct discord* client, const struct discord_message* event)
         struct discord_ret_messages ret_messages = { .sync = &messages };
         if (discord_get_channel_messages(client, event->channel_id, &params, &ret_messages) != CCORD_OK)
         {
-            fprintf(stderr, "Could not get purge guild channel messages: %s\n", sqlite3_errmsg(bot_db));
+            log_error("Could not get purge guild channel messages: %s\n", sqlite3_errmsg(bot_db));
             
             struct discord_create_message params = { .content = 
                 "Failed to purge user messages. Internal bot error occured :skull:" };
@@ -657,7 +657,7 @@ void on_purge(struct discord* client, const struct discord_message* event)
         if (discord_get_guild_channels(client, event->guild_id, &ret_channels) != CCORD_OK)
         {
             free(member);
-            fprintf(stderr, "Could not get purge guild channels: %s\n", sqlite3_errmsg(bot_db));
+            log_error("Could not get purge guild channels: %s\n", sqlite3_errmsg(bot_db));
 
             struct discord_create_message params = { .content = 
                 "Failed to purge messages. Internal bot error occured :skull:" };
@@ -678,7 +678,7 @@ void on_purge(struct discord* client, const struct discord_message* event)
                 struct discord_ret_messages ret_messages = { .sync = &messages };
                 if (discord_get_channel_messages(client, channels.array[channel_i].id, &params, &ret_messages) != CCORD_OK)
                 {
-                    fprintf(stderr, "Could not get purge guild channel messages: %s\n", sqlite3_errmsg(bot_db));
+                    log_error("Could not get purge guild channel messages: %s\n", sqlite3_errmsg(bot_db));
                     continue;
                 }
 
@@ -711,7 +711,7 @@ void on_purge(struct discord* client, const struct discord_message* event)
             free(member);
         }
 
-        fprintf(stderr, "Could not prepare insert purge: %s\n", sqlite3_errmsg(bot_db));
+        log_error("Could not prepare insert purge: %s\n", sqlite3_errmsg(bot_db));
         return;
     }
 
@@ -731,7 +731,7 @@ void on_purge(struct discord* client, const struct discord_message* event)
     
     if (sqlite3_step(insert_cmp_statement) != SQLITE_DONE)
     {
-        fprintf(stderr, "Could not insert latest purge to history: %s\n", sqlite3_errmsg(bot_db));
+        log_error("Could not insert latest purge to history: %s\n", sqlite3_errmsg(bot_db));
     }
 
     if (member != NULL)
@@ -778,7 +778,7 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
 
     if (db_err != SQLITE_OK)
     {
-        fprintf(stderr, "Could not prepare get censors: %s\n", sqlite3_errmsg(bot_db));
+        log_error("Could not prepare get censors: %s\n", sqlite3_errmsg(bot_db));
         return;
     }
 
@@ -856,7 +856,7 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
 
     if (db_err != SQLITE_OK)
     {
-        fprintf(stderr, "Could not prepare get censors: %s\n", sqlite3_errmsg(bot_db));
+        log_error("Could not prepare get censors: %s\n", sqlite3_errmsg(bot_db));
         return;
     }
 
@@ -968,7 +968,7 @@ size_t fetch_memory_callback(void* contents, size_t size, size_t nmemb, void *us
     if (new_memory == NULL)
     {
         fetch->size = 0;
-        fprintf(stderr, "Not enough memory to continue fetch (realloc returned NULL)\n");
+        log_error("Not enough memory to continue fetch (realloc returned NULL)\n");
         return 0;
     }
     fetch->memory = new_memory;
@@ -1014,7 +1014,7 @@ struct canvas_metadata download_canvas_metadata(char* metadata_url)
 
     if (metadata_response.error)
     {
-        fprintf(stderr, "Error fetching file: %s\n", metadata_response.error_message);
+        log_error("Error fetching file: %s\n", metadata_response.error_message);
         metadata.error = GENERATION_FAIL_METADATA;
         metadata.error_msg = "Sorry, an unexpected network error occurred and I can't fetch that canvas, "
              "please try again later.";
@@ -1347,7 +1347,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     struct downloaded_backup backup = download_canvas_backup(canvas_url);
     if (backup.error)
     {
-        fprintf(stderr, "Error fetching canvas backup: %s\n", backup.error_msg);
+        log_error("Error fetching canvas backup: %s\n", backup.error_msg);
         struct discord_create_message params = { .content = "Sorry, an unexpected network error occurred and I "
             "can't fetch that canvas, please try again later.;" };
         discord_create_message(client, event->channel_id, &params, NULL);
@@ -1409,7 +1409,7 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
         int db_err = sqlite3_prepare_v2(bot_db, delete_periodic_query, -1, &delete_cmp_statement, NULL);
         if (db_err != SQLITE_OK)
         {
-            fprintf(stderr, "Could not prepare delete periodic archive: %s\n", sqlite3_errmsg(bot_db));
+            log_error("Could not prepare delete periodic archive: %s\n", sqlite3_errmsg(bot_db));
         }
         else
         {
@@ -1417,7 +1417,7 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
             sqlite3_bind_text(delete_cmp_statement, 2, archive_info->http_root_url, -1, SQLITE_TRANSIENT);
             if (sqlite3_step(delete_cmp_statement) != SQLITE_DONE)
             {
-                fprintf(stderr, "Could not delete periodic archive: %s\n", sqlite3_errmsg(bot_db));
+                log_error("Could not delete periodic archive: %s\n", sqlite3_errmsg(bot_db));
             }
             sqlite3_finalize(delete_cmp_statement);
         }
@@ -1433,7 +1433,7 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
     if (metadata.error)
     {
         // TODO: Free stuff
-        fprintf(stderr, "Failed to create periodic canvas backup in channel %llu."
+        log_error("Failed to create periodic canvas backup in channel %llu."
             "Metadata fetch failed with error code %i: %s\n",
             (unsigned long long) archive_info->channel_id, metadata.error, metadata.error_msg);
         free(metadata_url);
@@ -1446,7 +1446,7 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
     struct downloaded_backup backup = download_canvas_backup(canvas_url);
     if (backup.error)
     {
-        fprintf(stderr, "Failed to create periodic canvas backup in channel %llu."
+        log_error("Failed to create periodic canvas backup in channel %llu."
             "Fetch failed with error code %i: %s\n",
             (unsigned long long) archive_info->channel_id, backup.error, backup.error_msg);
         free(canvas_url);
@@ -1463,7 +1463,7 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
     free(backup.data);
     if (canvas_image.error)
     {
-        fprintf(stderr, "Failed to create periodic canvas backup in channel %llu. Fetch failed with error code %i: %s\n",
+        log_error("Failed to create periodic canvas backup in channel %llu. Fetch failed with error code %i: %s\n",
             (unsigned long long) archive_info->channel_id, backup.error, backup.error_msg);
         return;
     }
@@ -1528,7 +1528,7 @@ void start_all_periodic_archives(struct discord* client)
 
     if (db_err != SQLITE_OK)
     {
-        fprintf(stderr, "Could not prepare get PeriodicArchives: %s\n", sqlite3_errmsg(bot_db));
+        log_error("Could not prepare get PeriodicArchives: %s\n", sqlite3_errmsg(bot_db));
         return;
     }
 
@@ -1624,7 +1624,7 @@ void on_archive(struct discord* client, const struct discord_message* event)
 
     if (sqlite3_prepare_v2(bot_db, query_inset_purge, -1, &insert_cmp_statement, NULL) != SQLITE_OK)
     {
-        fprintf(stderr, "Could not prepare insert periodic archive: %s\n", sqlite3_errmsg(bot_db));
+        log_error("Could not prepare insert periodic archive: %s\n", sqlite3_errmsg(bot_db));
         struct discord_create_message params = { .content =
             "Could not create automatic canvas archives. Internal bot error occurred :skull:" };
         discord_create_message(client, event->channel_id, &params, NULL);
@@ -1637,7 +1637,7 @@ void on_archive(struct discord* client, const struct discord_message* event)
 
     if (sqlite3_step(insert_cmp_statement) != SQLITE_DONE)
     {
-        fprintf(stderr, "Could not insert periodic archive: %s\n", sqlite3_errmsg(bot_db));
+        log_error("Could not insert periodic archive: %s\n", sqlite3_errmsg(bot_db));
         struct discord_create_message params = { .content =
             "Could not create automatic canvas archives. Internal bot error occurred :skull:" };
         discord_create_message(client, event->channel_id, &params, NULL);
@@ -1762,7 +1762,7 @@ void on_message(struct discord* client, const struct discord_message* event)
     {
         char error_buffer[100];
         regerror(reti, &rplace_over_regex, error_buffer, sizeof(error_buffer));
-        fprintf(stderr, "Regex match failed: %s\n", error_buffer);
+        log_error("Regex match failed: %s\n", error_buffer);
     }
 
     time_t current_time = time(NULL);
@@ -1850,7 +1850,7 @@ void telegram_listen_message(void* data)
 
                 if (telebot_error != TELEBOT_ERROR_NONE)
                 {
-                    fprintf(stderr, "Failed to send telegram message: %d \n", telebot_error);
+                    log_error("Failed to send telegram message: %d \n", telebot_error);
                 }
             }
 
@@ -1963,7 +1963,7 @@ int main(int argc, char* argv[])
     FILE* telegram_config_file = fopen(config_file, "rb");
     if (telegram_config_file == NULL)
     {
-        fprintf(stderr, "[CRITICAL] Could not bot config. File was inacessible?.\n");
+        log_error("[CRITICAL] Could not bot config. File was inacessible?.\n");
         return 1;
     }
 
@@ -1992,7 +1992,7 @@ int main(int argc, char* argv[])
             if (pthread_create(&telegram_bot_thread, NULL, telegram_listen_message, NULL) != 0
                 || pthread_join(telegram_bot_thread, NULL) != 0)
             {
-                fprintf(stderr, "Could not initialise telegram bot thread.\n");
+                log_error("Could not initialise telegram bot thread.\n");
             }
         }*/
     }
@@ -2000,7 +2000,7 @@ int main(int argc, char* argv[])
     FILE* rplace_config_file = fopen("rplace_bot.json", "rb");
     if (rplace_config_file == NULL)
     {
-        fprintf(stderr, "[CRITICAL] Could not read rplace config. File does not exist?\n");
+        log_error("[CRITICAL] Could not read rplace config. File does not exist?\n");
         return 1;
     }
 
@@ -2017,7 +2017,7 @@ int main(int argc, char* argv[])
 
     if (pthread_mutex_init(&fetch_lock, NULL) != 0)
     {
-        fprintf(stderr, "[CRITICAL] Failed to init fetch lock mutex. Bot can not run.\n");
+        log_error("[CRITICAL] Failed to init fetch lock mutex. Bot can not run.\n");
         return 1;
     }
 
@@ -2026,7 +2026,7 @@ int main(int argc, char* argv[])
     // Compile the regular expression
     if (regcomp(&rplace_over_regex, rplace_over_pattern, REG_EXTENDED))
     {
-        fprintf(stderr, "[CRITICAL] Could not compile 'rplace over' regex. Bot can not run.\n");
+        log_error("[CRITICAL] Could not compile 'rplace over' regex. Bot can not run.\n");
         return 1;
     }
     
@@ -2034,7 +2034,7 @@ int main(int argc, char* argv[])
     int db_err = sqlite3_open("rplace_bot.db", &bot_db);
     if (db_err)
     {
-        fprintf(stderr, "[CRITICAL] Could not open bot database: %s\n", sqlite3_errmsg(bot_db));
+        log_error("[CRITICAL] Could not open bot database: %s\n", sqlite3_errmsg(bot_db));
         sqlite3_close(bot_db);
         return 1;
     }
@@ -2048,7 +2048,7 @@ int main(int argc, char* argv[])
         )", NULL, NULL, &db_err_msg);
     if (db_err != SQLITE_OK)
     {
-        fprintf(stderr, "SQL error: Could not create Censors History table: %s\n", db_err_msg);
+        log_error("SQL error: Could not create Censors History table: %s\n", db_err_msg);
         sqlite3_free(db_err_msg);
     }
 
@@ -2061,7 +2061,7 @@ int main(int argc, char* argv[])
         )", NULL, NULL, &db_err_msg);
     if (db_err != SQLITE_OK)
     {
-        fprintf(stderr, "SQL error: Could not create PurgesHistory table: %s\n", db_err_msg);
+        log_error("SQL error: Could not create PurgesHistory table: %s\n", db_err_msg);
         sqlite3_free(db_err_msg);
     }
 
@@ -2072,7 +2072,7 @@ int main(int argc, char* argv[])
         )", NULL, NULL, &db_err_msg);
     if (db_err != SQLITE_OK)
     {
-        fprintf(stderr, "SQL error: Could not create PeriodicArchives table: %s\n", db_err_msg);
+        log_error("SQL error: Could not create PeriodicArchives table: %s\n", db_err_msg);
         sqlite3_free(db_err_msg);
     }
 
@@ -2081,7 +2081,7 @@ int main(int argc, char* argv[])
     sqlite3_stmt* get_cmp_statement;
     if (sqlite3_prepare_v2(bot_db, query_get_active_censors, -1, &get_cmp_statement, NULL) != SQLITE_OK)
     {
-        fprintf(stderr, "Could not prepare get active censors: %s\n", sqlite3_errmsg(bot_db));
+        log_error("Could not prepare get active censors: %s\n", sqlite3_errmsg(bot_db));
         return 1;
     }
     sqlite3_bind_int64(get_cmp_statement, 1, time(NULL));
@@ -2095,7 +2095,7 @@ int main(int argc, char* argv[])
     }
     if (step != SQLITE_DONE)
     {
-        fprintf(stderr, "[CRITICAL] Could not apply active censors: %s\n", sqlite3_errmsg(bot_db));
+        log_error("[CRITICAL] Could not apply active censors: %s\n", sqlite3_errmsg(bot_db));
         return 1;
     }
 
