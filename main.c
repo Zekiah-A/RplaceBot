@@ -1,7 +1,6 @@
-// RplaceBot (c) Zekiah-A - BUILD INSTRUCTIONS:
+// RplaceBot (c) Zekiah-A
 #include <bits/types/siginfo_t.h>
 #include <concord/discord_codecs.h>
-#include <concord/types.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <concord/discord.h>
@@ -24,6 +23,8 @@
 struct memory_fetch {
     size_t size;
     uint8_t* memory;
+    int error;
+    const char* error_message;
 };
 
 struct rplace_config {
@@ -40,8 +41,6 @@ struct view_canvas {
     char* name;
     char* socket;
     char* http;
-    int width;
-    int height;
 };
 
 struct censor {
@@ -51,20 +50,32 @@ struct censor {
 
 struct parsed_timescale {
     int period_s;
-    const char* period_unit;
+    char* period_unit;
     int period_original;
 };
 
 struct period_timer_info {
     struct discord* client;
     timer_t* timer_id;
-    char* canvas_url;
+    char* http_root_url;
     u64snowflake channel_id;
 };
 
 #define GENERATION_ERROR_NONE 0
-#define GENERATION_FAIL_FETCH 1
-#define GENERATION_FAIL_DRAW 2
+#define GENERATION_FAIL_METADATA 1
+#define GENERATION_FAIL_FETCH 2
+#define GENERATION_FAIL_DRAW 3
+
+typedef uint8_t colour[3];
+
+struct canvas_metadata {
+    int width;
+    int height;
+    colour* palette;
+    char palette_length;
+    int error;
+    char* error_msg;
+};
 
 struct downloaded_backup {
     int size;
@@ -84,9 +95,9 @@ struct censor* active_censors;
 int active_censors_size = 0;
 int active_censors_capacity = 0;
 
-struct rplace_config* rplace_bot_config;
+struct rplace_config* rplace_bot_config = NULL;
 
-uint8_t default_palette[32][3] = {
+colour default_palette[32] = {
     {109, 0, 26},
     {190, 0, 57},
     {255, 69, 0},
@@ -968,8 +979,77 @@ size_t fetch_memory_callback(void* contents, size_t size, size_t nmemb, void *us
     return realsize;
 }
 
+struct memory_fetch fetch(char* url)
+{
+    pthread_mutex_lock(&fetch_lock);
+    CURL* curl = curl_easy_init();
+    CURLcode result;
+    struct memory_fetch chunk = { };
+    chunk.memory = malloc(1);
+    chunk.size = 0;
+    curl_easy_setopt(curl, CURLOPT_HTTPGET, 1);
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fetch_memory_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &chunk);
+
+    result = curl_easy_perform(curl);
+    if (result != CURLE_OK)
+    {
+        if (chunk.memory != NULL)
+        {
+            free(chunk.memory);
+        }
+        chunk.error = 1;
+        chunk.error_message = curl_easy_strerror(result);
+        return chunk;
+    }
+    pthread_mutex_unlock(&fetch_lock);
+    return chunk;
+}
+
+struct canvas_metadata download_canvas_metadata(char* metadata_url)
+{
+    struct canvas_metadata metadata = { };
+    struct memory_fetch metadata_response = fetch(metadata_url);
+
+    if (metadata_response.error)
+    {
+        fprintf(stderr, "Error fetching file: %s\n", metadata_response.error_message);
+        metadata.error = GENERATION_FAIL_METADATA;
+        metadata.error_msg = "Sorry, an unexpected network error occurred and I can't fetch that canvas, "
+             "please try again later.";
+        return metadata;
+    }
+
+    char* json_string = malloc(metadata_response.size + 1);
+    memcpy(json_string, metadata_response.memory, metadata_response.size);
+    json_string[metadata_response.size] = '\0';
+
+    JSON_Value* root = json_parse_string(json_string);
+    JSON_Object* root_obj = json_value_get_object(root);
+    JSON_Value* palette_value = json_object_get_value(root_obj, "palette");
+    JSON_Array* palette_array = json_value_get_array(palette_value);
+    char palette_length = (char) json_array_get_count(palette_array);
+    metadata.palette_length = palette_length;
+    metadata.palette = malloc(3 * palette_length);
+    for (int i = 0; i < palette_length; i++)
+    {
+        uint32_t colour_int = (uint32_t) json_array_get_number(palette_array, i);
+        metadata.palette[i][0] = (uint8_t)(colour_int >> 24);
+        metadata.palette[i][1] = (uint8_t)(colour_int >> 16);
+        metadata.palette[i][2] = (uint8_t)(colour_int >> 8);
+    }
+    JSON_Value* width_value = json_object_get_value(root_obj, "width");
+    metadata.width = (int) json_value_get_number(width_value);
+    JSON_Value* height_value = json_object_get_value(root_obj, "height");
+    metadata.height = (int) json_value_get_number(height_value);
+
+    return metadata;
+}
+
 struct downloaded_backup download_canvas_backup(char* canvas_url)
 {
+    // TODO: Use fetch instead
     struct downloaded_backup download_result = { .error = GENERATION_ERROR_NONE }; 
     pthread_mutex_lock(&fetch_lock);
     CURL* curl = curl_easy_init();
@@ -991,9 +1071,9 @@ struct downloaded_backup download_canvas_backup(char* canvas_url)
             free(chunk.memory);
         }
 
-        fprintf(stderr, "Error fetching file: %s\n", curl_easy_strerror(result));
+        fprintf(stderr, "Error fetching canvas backup: %s\n", curl_easy_strerror(result));
         download_result.error = GENERATION_FAIL_FETCH;
-        download_result.error_msg = "Sorry, an unexpected network error ocurred and I can't fetch that canvas, "
+        download_result.error_msg = "Sorry, an unexpected network error occurred and I can't fetch that canvas, "
             "please try again later.";
     }
 
@@ -1021,7 +1101,7 @@ struct downloaded_backup rle_decode_board(int canvas_width, int canvas_height, u
             colour = board[i];
             continue;
         }
-        // After the colour, we koop until we unpack all repeats, since we never have zero
+        // After the board_colour, we koop until we unpack all repeats, since we never have zero
         // repeats, we use 0 as 1 so we treat everything as i + 1 repeats.
         for (int j = 0; j < board[i] + 1; j++)
         {
@@ -1041,7 +1121,7 @@ struct region_info {
     int scale;
 };
 
-struct canvas_image generate_canvas_image(int canvas_width, int canvas_height, struct region_info region, uint8_t* board, int size)
+struct canvas_image generate_canvas_image(int canvas_width, int canvas_height, struct region_info region, uint8_t* board, int size, colour* palette)
 {
     struct canvas_image gen_result = { };
     png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
@@ -1092,9 +1172,9 @@ struct canvas_image generate_canvas_image(int canvas_width, int canvas_height, s
     int i = canvas_width * region.start_y + region.start_x;
     while (i < canvas_width * canvas_height)
     {
-        // Copy over colour to image
+        // Copy over board_colour to image
         int x = i / canvas_width - region.start_y;       // image x (assuming image scale 1:1 with canvas)
-        int y = 3 * (i % canvas_width - region.start_x); // image y (assuming image scale 1:1 with canvas + accounting for 3 byte colour)
+        int y = 3 * (i % canvas_width - region.start_x); // image y (assuming image scale 1:1 with canvas + accounting for 3 byte board_colour)
 
         if (region.scale == 1)
         {
@@ -1102,7 +1182,7 @@ struct canvas_image generate_canvas_image(int canvas_width, int canvas_height, s
 
             for (int p = 0; p < 3; p++)
             {
-                position[p] = default_palette[board[i]][p]; // colour
+                position[p] = palette[board[i]][p]; // board_colour
             }
         }
         else
@@ -1117,7 +1197,7 @@ struct canvas_image generate_canvas_image(int canvas_width, int canvas_height, s
 
                     for (int p = 0; p < 3; p++)
                     {
-                        position[p] = default_palette[board[i]][p]; // colour
+                        position[p] = palette[board[i]][p]; // board_colour
                     }
                 }
             }
@@ -1158,8 +1238,9 @@ struct canvas_image generate_canvas_image(int canvas_width, int canvas_height, s
 
 void on_canvas_mention(struct discord* client, const struct discord_message* event)
 {
-    if (event->author->bot)
+    if (event->author->bot) {
         return;
+    }
 
     char* count_state = NULL;
     char* arg = strtok_r(event->content, " ", &count_state);
@@ -1169,9 +1250,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         return;
     }
     char* canvas_name = arg;
-    char* canvas_url = NULL;
-    int canvas_width = 0;
-    int canvas_height = 0;
+    char* http_root_url = NULL;
 
     // Read parameters from message
     for (int i = 0; i < rplace_bot_config->view_canvases_count; i++)
@@ -1180,14 +1259,12 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
 
         if (strcmp(arg, view_canvas.name) == 0)
         {
-            canvas_url = view_canvas.http;
-            canvas_width = view_canvas.width;
-            canvas_height = view_canvas.height;
+            http_root_url = view_canvas.http;
             break;
         }
     }
 
-    if (canvas_url == NULL)
+    if (http_root_url == NULL)
     {
         struct discord_create_message params = {.content =
             "At the moment, custom canvases URLs are not supported.\n"
@@ -1197,17 +1274,30 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         return;
     }
 
+    // Fetch board metadata
+    char* metadata_url = strcat(http_root_url, "/metadata.json");
+    struct canvas_metadata metadata = download_canvas_metadata(metadata_url);
+    if (metadata.error)
+    {
+        // TODO: Free stuff
+        struct discord_create_message params = { .content = metadata.error_msg };
+        discord_create_message(client, event->channel_id, &params, NULL);
+        free(metadata_url);
+        return;
+    }
+    free(metadata_url);
+
     int start_x = 0;
     int start_y = 0;
-    int region_width = canvas_width - 1;
-    int region_height = canvas_height - 1;
+    int region_width = metadata.width - 1;
+    int region_height = metadata.height - 1;
     int scale = 1;
 
     // No arguments is allowed as it will just do a 1:1 full canvas preview
     arg = strtok_r(NULL, " ", &count_state);
     if (arg != NULL)
     {
-        start_x = MAX(0, MIN(canvas_width - 1, atoi(arg)));
+        start_x = MAX(0, MIN(metadata.width - 1, atoi(arg)));
 
         arg = strtok_r(NULL, " ", &count_state);
         if (arg == NULL) {
@@ -1217,7 +1307,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
             discord_create_message(client, event->channel_id, &params, NULL);
             return;
         }
-        start_y = MAX(0, MIN(canvas_width - 1, atoi(arg)));
+        start_y = MAX(0, MIN(metadata.height - 1, atoi(arg)));
 
         arg = strtok_r(NULL, " ", &count_state);
         if (arg == NULL)
@@ -1228,7 +1318,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
             discord_create_message(client, event->channel_id, &params, NULL);
             return;
         }
-        region_width = MIN(canvas_width - 1 - start_x, atoi(arg));
+        region_width = MIN(metadata.width - 1 - start_x, atoi(arg));
 
         arg = strtok_r(NULL, " ", &count_state);
         if (arg == NULL)
@@ -1239,7 +1329,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
             discord_create_message(client, event->channel_id, &params, NULL);
             return;
         }
-        region_height = MIN(canvas_height - 1 - start_y, atoi(arg));
+        region_height = MIN(metadata.height - 1 - start_y, atoi(arg));
 
         if (region_width <= 0 || region_height <= 0)
         {
@@ -1267,6 +1357,7 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         0, "✅", NULL);
 
     // Fetch decode board
+    char* canvas_url = strcat(http_root_url, "/place");
     struct downloaded_backup backup = download_canvas_backup(canvas_url);
     if (backup.error)
     {
@@ -1274,17 +1365,17 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
-    if (backup.size < canvas_width * canvas_height)
+    if (backup.size < metadata.width * metadata.height)
     {
         // It is likely a RLE compressed new format board
-        rle_decode_board(canvas_width, canvas_height, &backup.data, &backup.size);
+        rle_decode_board(metadata.width, metadata.height, &backup.data, &backup.size);
     }
     struct region_info region = {
         .scale = scale,
         .start_x = start_x,
         .start_y = start_y
     };
-    struct canvas_image canvas_image = generate_canvas_image(canvas_width, canvas_height, region, backup.data, backup.size);
+    struct canvas_image canvas_image = generate_canvas_image(metadata.width, metadata.height, region, backup.data, backup.size, metadata.palette);
     free(backup.data);
     if (canvas_image.error)
     {
@@ -1294,10 +1385,11 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     }
 
     // At minimum, may be "Image at 65535 65535 on ``, source: " (length 36 + 1 (\0))
-    int max_response_length = strlen(canvas_url) + strlen(canvas_name) + 37;
-    char* response = alloca(max_response_length); 
-    snprintf(response, max_response_length, "Image at %i %i on `%s`, source: %s",
-        start_x, start_y, canvas_name, canvas_url);
+    const char* raw_response_str = "Image at %d %d on `%s`, source: %s";
+    size_t max_response_length = snprintf(NULL, 0, raw_response_str, start_x, start_y, canvas_name, canvas_url);
+    char* response = alloca(max_response_length);
+    snprintf(response, max_response_length, raw_response_str, start_x, start_y, canvas_name, canvas_url);
+    free(canvas_url);
 
     struct discord_create_message params = {
         .content = response,
@@ -1323,7 +1415,7 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
     struct discord_ret_channel ret_channel = { .sync = &channel };
     if (discord_get_channel(archive_info->client, archive_info->channel_id, &ret_channel) != CCORD_OK)
     {
-        const char* delete_periodic_query = "DELETE FROM PeriodicArchives WHERE channel_id = ? AND board_url = ?";
+        const char* delete_periodic_query = "DELETE FROM PeriodicArchives WHERE channel_id = ? AND http_root_url = ?;";
         sqlite3_stmt* delete_cmp_statement;
         
         int db_err = sqlite3_prepare_v2(bot_db, delete_periodic_query, -1, &delete_cmp_statement, NULL);
@@ -1334,7 +1426,7 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
         else
         {
             sqlite3_bind_int64(delete_cmp_statement, 1, archive_info->channel_id);
-            sqlite3_bind_text(delete_cmp_statement, 2, archive_info->canvas_url, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(delete_cmp_statement, 2, archive_info->http_root_url, -1, SQLITE_TRANSIENT);
             if (sqlite3_step(delete_cmp_statement) != SQLITE_DONE)
             {
                 fprintf(stderr, "Could not delete periodic archive: %s\n", sqlite3_errmsg(bot_db));
@@ -1348,12 +1440,25 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
         return;
     }
 
+    char* metadata_url = strcat(archive_info->http_root_url, "/metadata.json");
+    struct canvas_metadata metadata = download_canvas_metadata(metadata_url);
+    if (metadata.error)
+    {
+        // TODO: Free stuff
+        fprintf(stderr, "Failed to create periodic canvas backup in channel %llu."
+            "Metadata fetch failed with error code %i: %s\n",
+            (unsigned long long) archive_info->channel_id, metadata.error, metadata.error_msg);
+        free(metadata_url);
+        return;
+    }
+    free(metadata_url);
 
     // Fetch decode board
-    struct downloaded_backup backup = download_canvas_backup(archive_info->canvas_url);
+    struct downloaded_backup backup = download_canvas_backup(archive_info->http_root_url);
     if (backup.error)
     {
-        fprintf(stderr, "Failed to create periodic canvas backup in channel %llu. Fetch failed with error code %i: %s\n",
+        fprintf(stderr, "Failed to create periodic canvas backup in channel %llu."
+            "Fetch failed with error code %i: %s\n",
             (unsigned long long) archive_info->channel_id, backup.error, backup.error_msg);
         return;
     }
@@ -1362,7 +1467,8 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
         .start_x = 0,
         .start_y = 0
     };
-    struct canvas_image canvas_image = generate_canvas_image(1000, 1000, region, backup.data, backup.size);
+
+    struct canvas_image canvas_image = generate_canvas_image(500, 500, region, backup.data, backup.size, default_palette);
     free(backup.data);
     if (canvas_image.error)
     {
@@ -1371,10 +1477,10 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
         return;
     }
 
-    int max_content_length = strlen(archive_info->canvas_url) + 48;
+    int max_content_length = strlen(archive_info->http_root_url) + 48;
     char* message_content = alloca(max_content_length + 1);
     snprintf(message_content, max_content_length, ":alarm_clock:  Automatic canvas backup. Source %s",
-        archive_info->canvas_url);
+        archive_info->http_root_url);
     struct discord_create_message params = {
         .content = message_content,
         .attachments = &(struct discord_attachments){
@@ -1404,7 +1510,7 @@ void create_periodic_archive(struct discord* client, char* canvas_url, int perio
     struct period_timer_info* handler_info = malloc(sizeof(struct period_timer_info));
     handler_info->client = client;
     handler_info->timer_id = timer_id;
-    handler_info->canvas_url = canvas_url;
+    handler_info->http_root_url = canvas_url;
     handler_info->channel_id = channel_id;
 
     struct sigevent sev = {
@@ -1414,7 +1520,8 @@ void create_periodic_archive(struct discord* client, char* canvas_url, int perio
     };
     timer_create(CLOCK_REALTIME, &sev, timer_id);
 
-    // TODO: If bot restarts are frequent, then save last send in DB and set it_value to a value that maintains interval seamlessly
+    // TODO: If bot restarts are frequent, then save last send in DB and set
+    // TODO: it_value to a value that maintains interval seamlessly
     struct itimerspec its = {
         .it_interval = { .tv_sec = period_s, .tv_nsec = 0 },
         .it_value = { .tv_sec = 1  }
@@ -1438,11 +1545,11 @@ void start_all_periodic_archives(struct discord* client)
     {
         const uint64_t channel_id = sqlite3_column_int64(archives_cmp_statement, 0);
         const int period_s = sqlite3_column_int(archives_cmp_statement, 1);
-        const unsigned char* board_url_text = sqlite3_column_text(archives_cmp_statement, 2);
+        const unsigned char* http_root_url_text = sqlite3_column_text(archives_cmp_statement, 2);
 
 
-        char* canvas_url = strdup((char*) board_url_text);
-        create_periodic_archive(client, canvas_url, period_s, channel_id);
+        char* http_root_url = strdup((char*) http_root_url_text);
+        create_periodic_archive(client, http_root_url, period_s, channel_id);
     }
     sqlite3_finalize(archives_cmp_statement);
 }
@@ -1465,20 +1572,21 @@ void on_archive(struct discord* client, const struct discord_message* event)
         return;
     }
 
-    char* canvas_url = NULL;
+    char* http_root_url = NULL;
+    char* metadata_url = NULL;
     for (int i = 0; i < rplace_bot_config->view_canvases_count; i++)
     {
         struct view_canvas view_canvas = rplace_bot_config->view_canvases[i];
         if (strcmp(canvas_name, view_canvas.name) == 0)
         {
-            canvas_url = view_canvas.http;
+            http_root_url = view_canvas.http;
             break;
         }
     }
-    if (canvas_url == NULL)
+    if (http_root_url == NULL)
     {
         // inbuilt_canvas = 0;
-        struct discord_create_message params = {.content =
+        struct discord_create_message params = { .content =
             "Sorry. At the moment, custom canvases URLs are not supported." };
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
@@ -1520,7 +1628,7 @@ void on_archive(struct discord* client, const struct discord_message* event)
         return;
     }
 
-    const char* query_inset_purge = "INSERT INTO PeriodicArchives (channel_id, period_s, board_url) VALUES (?, ?, ?)";
+    const char* query_inset_purge = "INSERT INTO PeriodicArchives (channel_id, period_s, board_url, metadata_url) VALUES (?, ?, ?)";
     sqlite3_stmt* insert_cmp_statement;
 
     if (sqlite3_prepare_v2(bot_db, query_inset_purge, -1, &insert_cmp_statement, NULL) != SQLITE_OK)
@@ -1534,7 +1642,7 @@ void on_archive(struct discord* client, const struct discord_message* event)
 
     sqlite3_bind_int64(insert_cmp_statement, 1, channel->id);   
     sqlite3_bind_int(insert_cmp_statement, 2, timescale.period_s);
-    sqlite3_bind_text(insert_cmp_statement, 3, canvas_url, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(insert_cmp_statement, 3, http_root_url, -1, SQLITE_TRANSIENT);
 
     if (sqlite3_step(insert_cmp_statement) != SQLITE_DONE)
     {
@@ -1544,7 +1652,7 @@ void on_archive(struct discord* client, const struct discord_message* event)
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
-    create_periodic_archive(client, canvas_url, timescale.period_s, channel->id);
+    create_periodic_archive(client, http_root_url, timescale.period_s, channel->id);
 
     const char* success_template = "Successfully set up automatic canvas archives at interval *%i %s* in channel %s.";
     int success_len = snprintf(NULL, 0, success_template, timescale.period_original, timescale.period_unit, channel_name) + 1;
@@ -1771,8 +1879,6 @@ void parse_view_canvases(const char* key, JSON_Value* value, struct view_canvas*
     canvas->name = strdup(key);
     canvas->socket = strdup(json_object_get_string(obj, "socket"));
     canvas->http = strdup(json_object_get_string(obj, "http"));
-    canvas->width = json_object_get_number(obj, "width");
-    canvas->height = json_object_get_number(obj, "height");
 }
 
 void parse_mod_roles(const char* key, JSON_Value* value, u64snowflake** roles, int* count)
@@ -1881,7 +1987,6 @@ int main(int argc, char* argv[])
     if (_telegram_client != NULL)
     {
         /*
-        
         telebot_user_t me;
         if (telebot_get_me(_telegram_client, &me) != TELEBOT_ERROR_NONE)
         {
