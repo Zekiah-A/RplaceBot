@@ -1454,14 +1454,17 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
     free(metadata_url);
 
     // Fetch decode board
-    struct downloaded_backup backup = download_canvas_backup(archive_info->http_root_url);
+    char* canvas_url = strcat(archive_info->http_root_url, "/place");
+    struct downloaded_backup backup = download_canvas_backup(canvas_url);
     if (backup.error)
     {
         fprintf(stderr, "Failed to create periodic canvas backup in channel %llu."
             "Fetch failed with error code %i: %s\n",
             (unsigned long long) archive_info->channel_id, backup.error, backup.error_msg);
+        free(canvas_url);
         return;
     }
+    free(canvas_url);
     struct region_info region = {
         .scale = 1,
         .start_x = 0,
@@ -1494,7 +1497,7 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
     free(canvas_image.data);
 }
 
-void create_periodic_archive(struct discord* client, char* canvas_url, int period_s, u64snowflake channel_id)
+void create_periodic_archive(struct discord* client, char* http_root_url, int period_s, u64snowflake channel_id)
 {
     // Signal handler
     struct sigaction sa = {
@@ -1510,7 +1513,7 @@ void create_periodic_archive(struct discord* client, char* canvas_url, int perio
     struct period_timer_info* handler_info = malloc(sizeof(struct period_timer_info));
     handler_info->client = client;
     handler_info->timer_id = timer_id;
-    handler_info->http_root_url = canvas_url;
+    handler_info->http_root_url = http_root_url;
     handler_info->channel_id = channel_id;
 
     struct sigevent sev = {
