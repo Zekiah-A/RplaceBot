@@ -934,6 +934,7 @@ void on_mod_history(struct discord* client, const struct discord_message* event)
     }
     sqlite3_finalize(purges_cmp_statement);
 
+    // TODO: Paginate tables
     struct discord_create_message params = { .content = 
         tables };
     discord_create_message(client, event->channel_id, &params, NULL);
@@ -1222,6 +1223,18 @@ struct canvas_image generate_canvas_image(int canvas_width, int canvas_height, s
     return gen_result;
 }
 
+char* concat(const char* str1, const char* str2)
+{
+    size_t len1 = strlen(str1);
+    size_t len2 = strlen(str2);
+    size_t len_total = len1 + len2 + 1;
+
+    char* result = (char*) malloc(len_total * sizeof(char));
+    strcpy(result, str1);
+    strcat(result, str2);
+    return result;
+}
+
 void on_canvas_mention(struct discord* client, const struct discord_message* event)
 {
     if (event->author->bot) {
@@ -1249,19 +1262,18 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
             break;
         }
     }
-
     if (http_root_url == NULL)
     {
         struct discord_create_message params = {.content =
             "At the moment, custom canvases URLs are not supported.\n"
-            "Format: r/view `canvas1/canvas2/turkeycanvas` `x` `y` `w` `h` `upscale`\n"
+            "Format: r/view `canvas1` `x` `y` `w` `h` `upscale`\n"
             "Try: r/view canvas1 10 10 100 100 2x"};
         discord_create_message(client, event->channel_id, &params, NULL);
         return;
     }
 
     // Fetch board metadata
-    char* metadata_url = strcat(http_root_url, "/metadata.json");
+    char* metadata_url =  concat(http_root_url, "/metadata.json");
     struct canvas_metadata metadata = download_canvas_metadata(metadata_url);
     if (metadata.error)
     {
@@ -1342,8 +1354,9 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
     discord_create_reaction(client, event->channel_id, event->id,
         0, "✅", NULL);
 
+
     // Fetch decode board
-    char* canvas_url = strcat(http_root_url, "/place");
+    char* canvas_url = concat(http_root_url, "/place");
     struct downloaded_backup backup = download_canvas_backup(canvas_url);
     if (backup.error)
     {
@@ -1428,7 +1441,7 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
         return;
     }
 
-    char* metadata_url = strcat(archive_info->http_root_url, "/metadata.json");
+    char* metadata_url = concat(archive_info->http_root_url, "/metadata.json");
     struct canvas_metadata metadata = download_canvas_metadata(metadata_url);
     if (metadata.error)
     {
@@ -1442,7 +1455,7 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
     free(metadata_url);
 
     // Fetch decode board
-    char* canvas_url = strcat(archive_info->http_root_url, "/place");
+    char* canvas_url = concat(archive_info->http_root_url, "/place");
     struct downloaded_backup backup = download_canvas_backup(canvas_url);
     if (backup.error)
     {
