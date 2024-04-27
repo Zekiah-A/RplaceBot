@@ -24,7 +24,7 @@ struct memory_fetch {
     size_t size;
     uint8_t* memory;
     int error;
-    const char* error_message;
+    char* error_msg;
 };
 
 struct rplace_config {
@@ -1001,7 +1001,7 @@ struct memory_fetch fetch(char* url)
             free(chunk.memory);
         }
         chunk.error = 1;
-        chunk.error_message = curl_easy_strerror(result);
+        chunk.error_msg = curl_easy_strerror(result);
         return chunk;
     }
     pthread_mutex_unlock(&fetch_lock);
@@ -1015,7 +1015,7 @@ struct canvas_metadata download_canvas_metadata(char* metadata_url)
 
     if (metadata_response.error)
     {
-        log_error("Error fetching file: %s\n", metadata_response.error_message);
+        log_error("Error fetching file: %s\n", metadata_response.error_msg);
         metadata.error = GENERATION_FAIL_METADATA;
         metadata.error_msg = "Sorry, an unexpected network error occurred and I can't fetch that canvas, "
              "please try again later.";
@@ -1061,7 +1061,7 @@ struct downloaded_backup download_canvas_backup(char* canvas_url)
             download_result.data = NULL;
         }
         download_result.error = GENERATION_FAIL_FETCH;
-        download_result.error_msg = response.error_message;
+        download_result.error_msg = response.error_msg;
     }
     else
     {
@@ -1108,7 +1108,8 @@ struct region_info {
     int scale;
 };
 
-struct canvas_image generate_canvas_image(int canvas_width, int canvas_height, struct region_info region, uint8_t* board, int size, colour* palette)
+struct canvas_image generate_canvas_image(int canvas_width, int canvas_height, struct region_info region,
+    uint8_t* board, int size, colour* palette)
 {
     struct canvas_image gen_result = { };
     png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
@@ -1376,7 +1377,8 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
         .start_x = start_x,
         .start_y = start_y
     };
-    struct canvas_image canvas_image = generate_canvas_image(metadata.width, metadata.height, region, backup.data, backup.size, metadata.palette);
+    struct canvas_image canvas_image = generate_canvas_image(metadata.width, metadata.height,
+        region, backup.data, backup.size, metadata.palette);
     free(backup.data);
     if (canvas_image.error)
     {
@@ -1472,7 +1474,8 @@ void send_periodic_archive(int sig_no, siginfo_t* sig_info, void* unused_data)
         .start_y = 0
     };
 
-    struct canvas_image canvas_image = generate_canvas_image(500, 500, region, backup.data, backup.size, default_palette);
+    struct canvas_image canvas_image = generate_canvas_image(metadata.width, metadata.height,
+        region, backup.data, backup.size, metadata.palette);
     free(backup.data);
     if (canvas_image.error)
     {
