@@ -83,7 +83,7 @@ struct downloaded_backup {
 	size_t size;
 	uint8_t* data;
 	enum GENERATION_RESULT error;
-	char* error_msg;
+	const char* error_msg;
 };
 
 struct canvas_image {
@@ -715,7 +715,7 @@ void on_purge(struct discord* client, const struct discord_message* event)
 	}
 }
 
-void ensure_tables_capacity(char** tables, int* tables_used, int* tables_len, int new_table_len)
+void ensure_tables_capacity(char** tables, size_t* tables_used, size_t* tables_len, int new_table_len)
 {
 	(*tables_used) += new_table_len;
 	if (*tables_used > *tables_len) {
@@ -1026,7 +1026,7 @@ struct downloaded_backup download_canvas_backup(char* canvas_url)
 	return download_result;
 }
 
-struct downloaded_backup rle_decode_board(int canvas_width, int canvas_height, uint8_t** ref_board, int* size)
+struct downloaded_backup rle_decode_board(int canvas_width, int canvas_height, uint8_t** ref_board, size_t* size)
 {
 	// Then this is a new format (RLE encoded) board that must be decoded
 	int decoded_size = canvas_width * canvas_height;
@@ -1306,8 +1306,10 @@ void on_canvas_mention(struct discord* client, const struct discord_message* eve
 		region, backup.data, backup.size, metadata.palette);
 	free(backup.data);
 	if (canvas_image.error) {
-		struct discord_create_message params = { .content = backup.error_msg };
+		char* error_msg = strdup(backup.error_msg);
+		struct discord_create_message params = { .content = error_msg };
 		discord_create_message(client, event->channel_id, &params, NULL);
+		free(error_msg);
 		return;
 	}
 
