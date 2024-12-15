@@ -9,7 +9,7 @@
             "name": "(gdb) Launch",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/RplaceBot",
+            "program": "${workspaceFolder}/build/RplaceBot",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
